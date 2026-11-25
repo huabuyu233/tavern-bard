@@ -310,3 +310,68 @@ test('init.js creates empty greetings/ and index note when card has no greetings
     assert.match(alwaysMd, /当前无常驻世界书条目/);
   });
 });
+
+test('initWorkspace preserves live campaign.json progress when refreshing an active campaign without --preset or --force', () => {
+  const { initWorkspace } = require('../skill/scripts/init');
+
+  withTempDir((dir) => {
+    const cardPath = path.join(dir, 'active-card.json');
+    const campaignDir = path.join(dir, 'active-campaign');
+    fs.writeFileSync(
+      cardPath,
+      JSON.stringify({
+        spec: 'chara_card_v2',
+        data: {
+          name: '江亦雪',
+          description: '更新后的角色描述',
+          first_mes: '你好，{{user}}。',
+        },
+      }),
+      'utf8'
+    );
+
+    // Initial setup with preset
+    initWorkspace({
+      cardPath,
+      presetPath: FIXTURE_PRESET,
+      user: '陈默',
+      dir: campaignDir,
+    });
+
+    // Simulate an active campaign in progress
+    const campaignPath = path.join(campaignDir, 'campaign.json');
+    const originalCreatedAt = '2026-01-15T08:30:00.000Z';
+    const liveCampaign = {
+      char: '江亦雪',
+      user: '陈默',
+      hasStatus: true,
+      hasStatusCandidates: true,
+      hasPreset: true,
+      currentChapter: 3,
+      currentTurn: 42,
+      createdAt: originalCreatedAt,
+      cardSource: 'active-card.json',
+      presetSource: 'Meowssiah-2.1.6.json',
+    };
+    fs.writeFileSync(campaignPath, `${JSON.stringify(liveCampaign, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(path.join(campaignDir, 'state.json'), JSON.stringify({ 好感度: 80 }), 'utf8');
+
+    // Re-run initWorkspace without --preset and without --force
+    const refreshed = initWorkspace({
+      cardPath,
+      user: '陈默',
+      dir: campaignDir,
+    });
+
+    const after = JSON.parse(fs.readFileSync(campaignPath, 'utf8'));
+    assert.equal(after.createdAt, originalCreatedAt);
+    assert.equal(after.currentChapter, 3);
+    assert.equal(after.currentTurn, 42);
+    assert.equal(after.hasStatus, true);
+    assert.equal(after.hasPreset, true);
+    assert.equal(after.presetSource, 'Meowssiah-2.1.6.json');
+    assert.deepEqual(refreshed.campaign, after);
+    assert.equal(fs.existsSync(path.join(campaignDir, 'preset', 'source.json')), true);
+    assert.equal(fs.existsSync(path.join(campaignDir, 'state.json')), true);
+  });
+});

@@ -155,7 +155,7 @@ function buildRawStatusCandidatesMd(candidates) {
   return `${lines.join('\n')}`;
 }
 
-function buildAgentsMd({ char, user, hasPreset, hasStatusCandidates, skillDir }) {
+function buildAgentsMd({ char, user, hasPreset, hasStatus, hasStatusCandidates, skillDir }) {
   const skillMdPath = path.join(skillDir, 'SKILL.md');
   const presetScriptPath = path.join(skillDir, 'scripts', 'preset.js');
   const hudScriptPath = path.join(skillDir, 'scripts', 'hud.js');
@@ -178,7 +178,7 @@ When starting a new session or recovering from context compression, read ONLY:
 3. \`worldbook/always.md\` and \`worldbook/index.md\`
 4. ${hasPreset ? '`preset/active.md`' : '`preset/active.md` (if present)'}
 5. ${
-    hasStatusCandidates
+    hasStatusCandidates && !hasStatus
       ? '`state.json` and `status/rules.md` (if `hasStatus` is `false`, finish converting `status/_raw_candidates.md` first)'
       : '`state.json` and `status/rules.md` (if `hasStatus: true`)'
   }
@@ -228,6 +228,62 @@ function writeInitialMemoryFiles(targetDir) {
   }
 }
 
+function readExistingCampaign(targetDir) {
+  const campaignPath = path.join(targetDir, 'campaign.json');
+  if (!fs.existsSync(campaignPath)) return null;
+  const parsed = readJsonFile(campaignPath, 'existing campaign.json');
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+}
+
+function buildCampaignMeta({
+  targetDir,
+  existingCampaign,
+  char,
+  user,
+  hasStatusCandidates,
+  resolvedCardPath,
+  resolvedPresetPath,
+}) {
+  const hasStateJson = fs.existsSync(path.join(targetDir, 'state.json'));
+  const hasPresetSource = fs.existsSync(path.join(targetDir, 'preset', 'source.json'));
+
+  const hasStatus = Boolean(existingCampaign && existingCampaign.hasStatus && hasStateJson);
+  const hasPreset = resolvedPresetPath
+    ? true
+    : Boolean(existingCampaign && existingCampaign.hasPreset && hasPresetSource);
+  const presetSource = resolvedPresetPath
+    ? path.basename(resolvedPresetPath)
+    : hasPreset && existingCampaign
+      ? existingCampaign.presetSource ?? null
+      : null;
+
+  const currentChapter =
+    existingCampaign && Number.isInteger(existingCampaign.currentChapter) && existingCampaign.currentChapter >= 1
+      ? existingCampaign.currentChapter
+      : 1;
+  const currentTurn =
+    existingCampaign && Number.isInteger(existingCampaign.currentTurn) && existingCampaign.currentTurn >= 0
+      ? existingCampaign.currentTurn
+      : 0;
+  const createdAt =
+    existingCampaign && typeof existingCampaign.createdAt === 'string' && existingCampaign.createdAt.trim()
+      ? existingCampaign.createdAt
+      : new Date().toISOString();
+
+  return {
+    char,
+    user,
+    hasStatus,
+    hasStatusCandidates,
+    hasPreset,
+    currentChapter,
+    currentTurn,
+    createdAt,
+    cardSource: path.basename(resolvedCardPath),
+    presetSource,
+  };
+}
+
 /**
  * Initialize or refresh a 1-directory-1-campaign tavern-bard workspace.
  * @param {object} opts
@@ -251,6 +307,7 @@ function initWorkspace(opts) {
 
   // Guard non-empty directory BEFORE modifying anything on disk
   assertTargetDirectoryReady(targetDir, force);
+  const existingCampaign = readExistingCampaign(targetDir);
 
   const resolvedCardPath = path.resolve(opts.cardPath);
   const cardObj = loadCard(resolvedCardPath);
@@ -322,9 +379,23 @@ function initWorkspace(opts) {
     fs.writeFileSync(path.join(presetDir, 'active.md'), ensureTrailingNewline(presetResult.activeMd), 'utf8');
   }
 
-  // Write status/_raw_candidates.md ONLY when status candidates exist
+  // Write memory/
+  writeInitialMemoryFiles(targetDir);
+
+  // Build campaign metadata (preserving live progress on refresh)
   const hasStatusCandidates = bundle.statusCandidates.length > 0;
-  if (hasStatusCandidates) {
+  const campaign = buildCampaignMeta({
+    targetDir,
+    existingCampaign,
+    char: bundle.meta.char,
+    user: bundle.meta.user,
+    hasStatusCandidates,
+    resolvedCardPath,
+    resolvedPresetPath,
+  });
+
+  // Write status/_raw_candidates.md ONLY when status candidates exist and state.json is not already active
+  if (hasStatusCandidates && !campaign.hasStatus) {
     const statusDir = path.join(targetDir, 'status');
     fs.mkdirSync(statusDir, { recursive: true });
     fs.writeFileSync(
@@ -334,22 +405,7 @@ function initWorkspace(opts) {
     );
   }
 
-  // Write memory/
-  writeInitialMemoryFiles(targetDir);
-
   // Write campaign.json, AGENTS.md, CLAUDE.md
-  const campaign = {
-    char: bundle.meta.char,
-    user: bundle.meta.user,
-    hasStatus: false,
-    hasStatusCandidates,
-    hasPreset: Boolean(resolvedPresetPath),
-    currentChapter: 1,
-    currentTurn: 0,
-    createdAt: new Date().toISOString(),
-    cardSource: path.basename(resolvedCardPath),
-    presetSource: resolvedPresetPath ? path.basename(resolvedPresetPath) : null,
-  };
   fs.writeFileSync(path.join(targetDir, 'campaign.json'), `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
   fs.writeFileSync(
     path.join(targetDir, 'AGENTS.md'),
@@ -357,6 +413,7 @@ function initWorkspace(opts) {
       char: campaign.char,
       user: campaign.user,
       hasPreset: campaign.hasPreset,
+      hasStatus: campaign.hasStatus,
       hasStatusCandidates,
       skillDir,
     }),
