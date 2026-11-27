@@ -360,6 +360,74 @@ test('hud.js CLI supports --once, --no-color, --help, campaign.json auto-title, 
   });
 });
 
+test('renderState does not collapse non-scalar { 状态/status, 详情/detail } objects to [object Object]', () => {
+  const { renderState } = require('../skill/scripts/hud');
+
+  const state = {
+    user: {
+      状态: {
+        体力: 80,
+        理智: 95,
+      },
+    },
+    环境: {
+      状态: ['暴雨', '夜'],
+    },
+    npc: {
+      status: { hp: 50 },
+      detail: 'injured',
+    },
+    npc2: {
+      status: 'injured',
+      detail: ['bleeding', 'dizzy'],
+    },
+    心情卡: {
+      status: 'calm',
+      detail: 'watching closely',
+    },
+  };
+
+  const out = renderState(state, null, { color: false, width: 72 });
+  assert.equal(out.includes('[object Object]'), false, `unexpected [object Object] in:\n${out}`);
+  assert.ok(out.includes('▸ 状态'), `expected nested sub-section ▸ 状态 in:\n${out}`);
+  assert.ok(out.includes('体力') && out.includes('80'), out);
+  assert.ok(out.includes('理智') && out.includes('95'), out);
+  assert.ok(out.includes('[暴雨]') && out.includes('[夜]'), `expected array chips for 环境.状态 in:\n${out}`);
+  assert.ok(out.includes('▸ status'), `expected nested sub-section ▸ status in:\n${out}`);
+  assert.ok(out.includes('hp:') && out.includes('50'), out);
+  assert.ok(out.includes('detail: injured'), out);
+  assert.ok(out.includes('[bleeding]') && out.includes('[dizzy]'), out);
+  assert.ok(out.includes('↳ watching closely'), `scalar { status, detail } should still render card:\n${out}`);
+});
+
+test('renderState anchors rate/ratio/percent/pct gauge keys so crate/pirate/strategy do not render progress bars', () => {
+  const { renderState } = require('../skill/scripts/hud');
+
+  const state = {
+    统计: {
+      crate: 10,
+      pirate: 20,
+      strategy: 50,
+      win_rate: 80,
+      hp_pct: 50,
+      ratio: 40,
+      percent: 75,
+    },
+  };
+
+  const out = renderState(state, null, { color: false, width: 72 });
+  const lines = out.split(/\r?\n/);
+  for (const nonGaugeKey of ['crate', 'pirate', 'strategy']) {
+    const line = lines.find((l) => l.includes(`${nonGaugeKey}:`));
+    assert.ok(line, `missing line for ${nonGaugeKey}`);
+    assert.equal(/[█░]/.test(line), false, `${nonGaugeKey} must NOT render a progress bar: ${line}`);
+  }
+  for (const gaugeKey of ['win_rate', 'hp_pct', 'ratio', 'percent']) {
+    const line = lines.find((l) => l.includes(`${gaugeKey}:`));
+    assert.ok(line && /[█░]/.test(line), `${gaugeKey} should render a progress bar: ${line}`);
+  }
+});
+
 test('hud.js watch mode waits cleanly when state.json is missing and renders as soon as valid state.json appears', async () => {
   await new Promise((resolve, reject) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tavern-bard-hud-watch-'));

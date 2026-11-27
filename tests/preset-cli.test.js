@@ -155,3 +155,37 @@ test('preset.js --help exits 0 and missing preset/source.json exits non-zero', (
     assert.match(`${errRes.stdout}\n${errRes.stderr}`, /source\.json/i);
   });
 });
+
+test('preset.js toggle does not rewrite preset/source.json when changed.length === 0', () => {
+  withTempDir((dir) => {
+    const presetDir = path.join(dir, 'preset');
+    fs.mkdirSync(presetDir, { recursive: true });
+
+    const sourcePreset = {
+      prompts: [
+        { identifier: 'a', name: '规则A', enabled: true, content: '已启用的规则A。' },
+      ],
+      prompt_order: [
+        { character_id: 100001, order: [{ identifier: 'a', enabled: true }] },
+      ],
+    };
+
+    // Write compact single-line JSON with an explicit historical mtime to detect unnecessary rewrites
+    const compactRaw = JSON.stringify(sourcePreset);
+    const sourcePath = path.join(presetDir, 'source.json');
+    fs.writeFileSync(sourcePath, compactRaw, 'utf8');
+    const oldTime = new Date(Date.now() - 120000);
+    fs.utimesSync(sourcePath, oldTime, oldTime);
+    const beforeMtimeMs = fs.statSync(sourcePath).mtimeMs;
+
+    const noopRes = runPresetCli(['toggle', '--enable', '规则A', '--dir', dir]);
+    assert.equal(noopRes.status, 0, noopRes.stderr);
+    assert.match(noopRes.stdout, /No preset entries changed/);
+
+    const afterRaw = fs.readFileSync(sourcePath, 'utf8');
+    const afterMtimeMs = fs.statSync(sourcePath).mtimeMs;
+    assert.equal(afterRaw, compactRaw, 'no-op toggle must not rewrite preset/source.json bytes');
+    assert.equal(afterMtimeMs, beforeMtimeMs, 'no-op toggle must not modify preset/source.json mtime');
+    assert.ok(fs.readFileSync(path.join(presetDir, 'active.md'), 'utf8').includes('已启用的规则A。'));
+  });
+});

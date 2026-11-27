@@ -128,7 +128,9 @@ function togglePreset({ dir, enable = [], disable = [] } = {}) {
   });
   const activeMd = compilePreset(updatedSourceJson, ctx.overrides, ctx.vars);
 
-  fs.writeFileSync(ctx.sourcePath, `${JSON.stringify(updatedSourceJson, null, 2)}\n`, 'utf8');
+  if (changed.length > 0) {
+    fs.writeFileSync(ctx.sourcePath, `${JSON.stringify(updatedSourceJson, null, 2)}\n`, 'utf8');
+  }
   fs.writeFileSync(ctx.activePath, ensureTrailingNewline(activeMd), 'utf8');
 
   return {

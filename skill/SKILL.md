@@ -26,7 +26,7 @@ User request in CWD
 
 **NEVER** pass `--force` or write RP files into a non-empty directory lacking `campaign.json` without explicit user confirmation — even if the user says `"快点直接开局别问东问西"`.
 
-1. Run `node "<skill_dir>/scripts/init.js"` **without** `--force` (or inspect CWD first).
+1. Run `node "<skill_dir>/scripts/init.js" --card "<card>"` **without** `--force` (or inspect CWD first).
 2. If `init.js` exits with code `2` (or non-RP files such as `package.json`, `src/`, `README.md`, or `.git` exist without `campaign.json`), **STOP immediately** with zero files created.
 3. Ask **one** clear question:
    - Initialize in a dedicated subdirectory (`--dir <subdir>`), or
@@ -43,7 +43,7 @@ User request in CWD
 3. **Status-bar branch (keyed to `campaign.json`)**:
    - **If `hasStatusCandidates: true` (and `hasStatus: false`)**: Read `status/_raw_candidates.md` and complete [references/mvu-conversion.md](references/mvu-conversion.md) **before the opening scene**:
      - Write `state.json` + `status/rules.md` (relocate static anatomy constants to lore; drop JS-computed formula fields — never silently drop fields without reporting).
-     - Strip any remaining inline status-bar instructions from `card/character.md` and `worldbook/always.md` (for `preset/`, patch in `preset/overrides.json` + run `preset.js compile`).
+     - Strip any remaining inline status-bar instructions from `card/character.md`, `worldbook/always.md`, and `card/greetings/*.md` (when status candidates originate from greetings; for `preset/`, patch in `preset/overrides.json` + run `preset.js compile`).
      - Delete `status/_raw_candidates.md` and set `"hasStatus": true` in `campaign.json`.
      - Present the **Onboarding Status Report** + `node "<skill_dir>/scripts/hud.js"` **during onboarding BEFORE the opening greeting**, and wait for confirmation/greeting pick so OOC conversion notes never share a message with RP prose or leak into RP turns.
    - **If `hasStatusCandidates: false`**: Do **not** create `state.json` or `status/`, do **not** set `hasStatus: true`, and do **not** suggest a second terminal.

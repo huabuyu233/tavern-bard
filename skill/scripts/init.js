@@ -69,7 +69,6 @@ function fenceTextBlock(content, lang = 'text') {
 
 function assertTargetDirectoryReady(targetDir, force) {
   if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
     return;
   }
 
@@ -341,6 +340,9 @@ function initWorkspace(opts) {
       }
     }
   }
+
+  // Create targetDir only after card/worldbook/preset inputs load cleanly
+  fs.mkdirSync(targetDir, { recursive: true });
 
   // Write card/
   const cardDir = path.join(targetDir, 'card');

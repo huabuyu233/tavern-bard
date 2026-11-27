@@ -375,3 +375,35 @@ test('initWorkspace preserves live campaign.json progress when refreshing an act
     assert.equal(fs.existsSync(path.join(campaignDir, 'state.json')), true);
   });
 });
+
+test('init.js does not create an empty orphan targetDir when --card or --preset input fails to load', () => {
+  const { initWorkspace } = require('../skill/scripts/init');
+
+  withTempDir((dir) => {
+    const missingCardTarget = path.join(dir, 'orphan-missing-card');
+    const missingRes = runInitCli(['--card', path.join(dir, 'does-not-exist.png'), '--dir', missingCardTarget]);
+    assert.notEqual(missingRes.status, 0);
+    assert.equal(fs.existsSync(missingCardTarget), false, 'must not leave empty dir on missing --card');
+
+    const badJsonCard = path.join(dir, 'bad-card.json');
+    fs.writeFileSync(badJsonCard, '{not valid json', 'utf8');
+    const badCardTarget = path.join(dir, 'orphan-bad-card');
+    assert.throws(() => initWorkspace({ cardPath: badJsonCard, dir: badCardTarget }));
+    assert.equal(fs.existsSync(badCardTarget), false, 'must not leave empty dir on invalid card JSON');
+
+    const validCard = path.join(dir, 'valid-card.json');
+    fs.writeFileSync(validCard, JSON.stringify({ name: '测试角色', first_mes: '你好' }), 'utf8');
+    const badPreset = path.join(dir, 'bad-preset.json');
+    fs.writeFileSync(badPreset, '{bad preset', 'utf8');
+    const badPresetTarget = path.join(dir, 'orphan-bad-preset');
+    assert.throws(() => initWorkspace({ cardPath: validCard, presetPath: badPreset, dir: badPresetTarget }));
+    assert.equal(fs.existsSync(badPresetTarget), false, 'must not leave empty dir on invalid preset JSON');
+
+    // Non-empty directory guard still wins with exit 2 even when --card fails to load
+    const nonEmptyTarget = path.join(dir, 'non-empty');
+    fs.mkdirSync(nonEmptyTarget);
+    fs.writeFileSync(path.join(nonEmptyTarget, 'keep.txt'), 'important', 'utf8');
+    const guardRes = runInitCli(['--card', path.join(dir, 'does-not-exist.png'), '--dir', nonEmptyTarget]);
+    assert.equal(guardRes.status, 2);
+  });
+});

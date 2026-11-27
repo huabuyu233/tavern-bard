@@ -18,7 +18,11 @@ const DEFAULT_USER = '旅人';
 
 const MVU_ENTRY_RE = /\[initvar\]|<\/?initvar>|\[mvu_update\]/i;
 const MVU_DIRECTIVE_RE = /mvu_submit_update/i;
-const STATUS_DIRECTIVE_RE = /<StatusBlock(?:_format)?>|StatusBlock|<user状态栏>|时间状态栏|状态栏/i;
+const STATUS_NEGATION_RE =
+  /(?:无需|不需要|禁止|不要|取消|移除|不带|没有|不含)[^\n]{0,10}(?:状态栏|属性面板|状态面板)/gi;
+const STATUS_TITLE_RE = /(?:状态栏|属性面板|状态面板)/i;
+const STATUS_DIRECTIVE_RE =
+  /SC状态指令|SC输出格式|MVU强制|<StatusBlock(?:\s|>|_format)|StatusBlock|<status_?block|<user状态栏>|时间状态栏|(?:正文末尾|回复末尾|每轮|每次回复|必须|输出|附带|生成|格式)[^\n]{0,30}(?:状态栏|属性面板|状态面板)|状态栏[：:]\s*\n/i;
 const STATUS_REGEX_RE = /状态栏|StatusBlock|status[-_]?bar|mvu[-_]?status|<status/i;
 
 function toText(value) {
@@ -336,9 +340,22 @@ function summarizeRegexCandidate(script) {
   return `findRegex: ${findRegex}\nreplaceSummary:\n${truncated}`;
 }
 
-function detectPromptStatusKind(text) {
-  if (MVU_ENTRY_RE.test(text) || MVU_DIRECTIVE_RE.test(text)) return 'mvu';
-  if (STATUS_DIRECTIVE_RE.test(text)) return 'frontend-prompt';
+function detectPromptStatusKind(text, title = '') {
+  const rawText = toText(text);
+  const rawTitle = toText(title);
+  if (
+    MVU_ENTRY_RE.test(rawText) ||
+    MVU_DIRECTIVE_RE.test(rawText) ||
+    (rawTitle && (MVU_ENTRY_RE.test(rawTitle) || MVU_DIRECTIVE_RE.test(rawTitle)))
+  ) {
+    return 'mvu';
+  }
+
+  const scrubbedText = rawText.replace(STATUS_NEGATION_RE, '');
+  const scrubbedTitle = rawTitle ? rawTitle.replace(STATUS_NEGATION_RE, '') : '';
+  if (STATUS_DIRECTIVE_RE.test(scrubbedText) || (scrubbedTitle && STATUS_TITLE_RE.test(scrubbedTitle))) {
+    return 'frontend-prompt';
+  }
   return null;
 }
 
@@ -414,13 +431,15 @@ function extractCardBundle(cardObj, extraEntries = [], vars = {}) {
       continue;
     }
 
-    const statusKind = detectPromptStatusKind(entrySearchText);
+    const entryTitleText = [entry.title, entry.comment, entry.name].filter(Boolean).join('\n');
+    const cleanedEntryContent = cleanStatusText(entry.content, macroVars);
+    const statusKind = detectPromptStatusKind(cleanedEntryContent, entryTitleText);
     if (statusKind) {
       statusCandidates.push({
         kind: statusKind,
         source: 'worldbook',
         title: entry.title,
-        content: cleanStatusText(entry.content, macroVars),
+        content: cleanedEntryContent,
       });
       continue;
     }

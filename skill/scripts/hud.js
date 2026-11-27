@@ -20,7 +20,7 @@ const ANSI = {
 };
 
 const GAUGE_KEY_RE =
-  /(?:好感|信任|亲密|爱意|顺从|羞耻|堕落|腐化|警戒|危险|疲劳|压力|饥饿|饱食|口渴|体力|耐力|生命|血量|理智|精神|魔力|法力|能量|护盾|士气|恐惧|愤怒|黑化|进度|完成|同步|默契|热情|忠诚|专注|清醒|健康|状态值|\bhp\b|\bmp\b|\bsp\b|\bap\b|\bsan\b|sanity|stamina|health|energy|shield|affection|favor|trust|love|lust|stress|fatigue|hunger|thirst|morale|progress|loyalty|affinity|relationship|bond|rate|ratio|percent|pct)/i;
+  /(?:好感|信任|亲密|爱意|顺从|羞耻|堕落|腐化|警戒|危险|疲劳|压力|饥饿|饱食|口渴|体力|耐力|生命|血量|理智|精神|魔力|法力|能量|护盾|士气|恐惧|愤怒|黑化|进度|完成|同步|默契|热情|忠诚|专注|清醒|健康|状态值|\bhp\b|\bmp\b|\bsp\b|\bap\b|\bsan\b|sanity|stamina|health|energy|shield|affection|favor|trust|love|lust|stress|fatigue|hunger|thirst|morale|progress|loyalty|affinity|relationship|bond|(?<![a-z])(?:rate|ratio|percent|pct)(?![a-z]))/i;
 const GAUGE_SUFFIX_RE = /[度率值]$/;
 const NON_GAUGE_KEY_RE = /(?:温度|角度|纬度|经度|海拔|价值|市值|均值|价格|硬度|密度|长度|宽度|高度|厚度)/;
 
@@ -304,20 +304,26 @@ function isStatusDetailPair(obj) {
   if (entries.length === 0 || entries.length > 2) return null;
 
   const map = new Map(entries);
+  let status;
+  let detail;
   if (map.has('状态') && entries.every(([k]) => k === '状态' || k === '详情')) {
-    return { status: map.get('状态'), detail: map.get('详情') };
+    status = map.get('状态');
+    detail = map.get('详情');
+  } else {
+    const lower = new Map(entries.map(([k, v]) => [k.toLowerCase(), v]));
+    if (
+      lower.has('status') &&
+      lower.has('detail') &&
+      entries.every(([k]) => k.toLowerCase() === 'status' || k.toLowerCase() === 'detail')
+    ) {
+      status = lower.get('status');
+      detail = lower.get('detail');
+    } else {
+      return null;
+    }
   }
 
-  const lower = new Map(entries.map(([k, v]) => [k.toLowerCase(), v]));
-  if (
-    lower.has('status') &&
-    lower.has('detail') &&
-    entries.every(([k]) => k.toLowerCase() === 'status' || k.toLowerCase() === 'detail')
-  ) {
-    return { status: lower.get('status'), detail: lower.get('detail') };
-  }
-
-  return null;
+  return isScalar(status) && (detail === undefined || isScalar(detail)) ? { status, detail } : null;
 }
 
 function isGaugeField(key, value) {

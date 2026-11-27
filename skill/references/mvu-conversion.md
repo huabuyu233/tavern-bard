@@ -53,10 +53,23 @@ Do **not** blindly copy 30-field anatomical sheets or browser-JS formulas into `
 }
 ```
 
+```markdown
+# 状态栏更新规则 (`status/rules.md`)
+
+每轮回复结束后，仅根据本轮实际剧情静默更新根目录 `state.json`：
+
+- `世界.时间` / `世界.地点`：随场景推进或移动同步更新。
+- `角色状态.好感度`（`0–100`）：友善互动 `+1~+3`，冒犯或违背承诺 `-2~-5`。
+- `角色状态.体温`：常规约 `36.6°C`，仅在环境冷热变化或剧烈情绪波动时微调。
+- `角色状态.当前心境`（`{ "状态", "详情" }`）：状态 2–4 字概括，详情用一句话说明心理动因。
+- `角色状态.状态标签`：简短数组（`<= 6` 项），随饮酒、受伤、疲劳等增减。
+- **已转入背景/省略项**：静态体测常数留于 `card/character.md`；前端 JS 熵增公式已舍弃。
+```
+
 ## 3. Clean Leftover Inline Directives (Prevent Prose Pollution)
 
 Before activating the status bar, remove every instruction telling the model to print an inline status block or `<thinking>`/`<mvu-status/>` inside chat replies:
-1. Edit `card/character.md` and `worldbook/always.md` to strip the inline status-bar formatting blocks/templates (while preserving non-status character/lore facts!).
+1. Edit `card/character.md`, `worldbook/always.md`, and `card/greetings/*.md` (when status candidates originate from greetings) to strip the inline status-bar formatting blocks/templates (while preserving non-status character/lore facts!).
 2. Check `preset/active.md`: if any enabled preset entry still instructs printing an inline status bar, write the cleaned entry text to `preset/overrides.json` keyed by its `identifier` (from `preset/source.json`), then run:
    ```bash
    node "<skill_dir>/scripts/preset.js" compile

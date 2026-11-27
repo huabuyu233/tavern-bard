@@ -382,3 +382,81 @@ test('loadCard and extractCardBundle strip megabyte extensions.tavern_helper pay
     assert.ok(!serializedBundle.includes('MEGA_JS_MARKER'));
   });
 });
+
+test('extractCardBundle keeps narrative/negated status mentions in lore while still detecting real status directives', () => {
+  const narrativeCard = {
+    spec: 'chara_card_v2',
+    data: {
+      name: '林晚',
+      description: '她低头看了一眼手机状态栏上的未读消息。本卡无状态栏，无需状态栏，请不要在回复末尾输出状态栏。',
+      personality: '细心',
+      scenario: '雨夜便利店',
+      first_mes: '手机状态栏亮着微光，不需要状态栏提示也能看清时间，{{user}}。',
+      alternate_greetings: ['禁止生成状态栏，这里只聊日常。'],
+      character_book: {
+        entries: [
+          {
+            uid: 0,
+            comment: '日常物件',
+            enabled: true,
+            constant: true,
+            insertion_order: 1,
+            content: '桌面上的手机状态栏显示电量剩 12%，本世界观没有状态栏或属性面板系统。',
+          },
+          {
+            uid: 1,
+            comment: '禁止属性面板规则',
+            enabled: true,
+            constant: false,
+            keys: ['面板'],
+            content: '游戏内禁止状态栏与不要属性面板弹窗。',
+          },
+        ],
+      },
+    },
+  };
+
+  const narrativeBundle = extractCardBundle(narrativeCard, [], { user: '旅人' });
+  assert.deepEqual(narrativeBundle.statusCandidates, []);
+  assert.ok(narrativeBundle.worldbook.always.includes('手机状态栏显示电量剩 12%'));
+  assert.equal(narrativeBundle.worldbook.entries.length, 1);
+  assert.ok(narrativeBundle.worldbook.entries[0].content.includes('禁止状态栏'));
+  assert.ok(narrativeBundle.characterMd.includes('手机状态栏上的未读消息'));
+  assert.ok(narrativeBundle.greetings[0].includes('手机状态栏亮着微光'));
+
+  // Positive cases: real fixture PNG + explicit tags + title naming + directive phrasing
+  const fixtureBundle = extractCardBundle(loadCard(FIXTURE_PNG), [], { user: '林渊' });
+  assert.ok(
+    fixtureBundle.statusCandidates.some((s) => s.kind === 'frontend-prompt' && s.title.includes('user状态栏'))
+  );
+
+  const directiveCard = {
+    name: '测试角色',
+    description: '普通描述',
+    system_prompt: '正文末尾必须附带状态栏，包含好感度与体力。',
+    first_mes: '你好。',
+    character_book: {
+      entries: [
+        {
+          uid: 0,
+          comment: '属性面板',
+          enabled: true,
+          constant: true,
+          content: '力量：10\n敏捷：12',
+        },
+        {
+          uid: 1,
+          comment: '内嵌模板',
+          enabled: true,
+          constant: false,
+          keys: ['状态'],
+          content: '状态栏：\n心情：平静',
+        },
+      ],
+    },
+  };
+
+  const directiveBundle = extractCardBundle(directiveCard);
+  assert.equal(directiveBundle.statusCandidates.length, 3);
+  assert.ok(directiveBundle.statusCandidates.every((s) => s.kind === 'frontend-prompt'));
+});
