@@ -243,6 +243,48 @@ test('displayWidth and CJK double-width wrapping keep exact borders on narrow wi
   }
 });
 
+test('renderState normalizes CRLF/CR/TAB and strips ANSI/C0/C1 control chars from untrusted keys and strings', () => {
+  const { renderState, displayWidth } = require('../skill/scripts/hud');
+
+  const dirtyState = {
+    '危险\r\n键\t名\b\x1b[31m': '第一行\r\n第二行\r第三行\t缩进\b\x1b[31m红字\x1b[0m\x7f\x9b',
+    '区块\r标题\x1b[33m': {
+      心境: {
+        状态: '冷静\b\x1b[32m',
+        详情: '甲\r\n乙\r丙\t丁\x1b]0;evil\x07',
+      },
+      标签: ['tag\r\n1', 'tag\t2\b\x1b[31m'],
+    },
+  };
+
+  const rendered = renderState(dirtyState, null, {
+    color: false,
+    width: 44,
+    title: '标题\r\n测试\t\b\x1b[35m',
+  });
+
+  assert.equal(rendered.includes('\r'), false, 'rendered output must not contain bare CR');
+  assert.equal(rendered.includes('\b'), false, 'rendered output must not contain backspace');
+  assert.equal(rendered.includes('\x1b'), false, 'rendered output must not contain raw ESC');
+  assert.equal(rendered.includes('[31m'), false, 'injected CSI sequence must be stripped cleanly');
+  assert.equal(rendered.includes('\x7f'), false, 'rendered output must not contain DEL');
+  assert.equal(rendered.includes('\x9b'), false, 'rendered output must not contain C1 control chars');
+  assert.ok(rendered.includes('第一行'));
+  assert.ok(rendered.includes('第二行'));
+  assert.ok(rendered.includes('第三行'));
+  assert.ok(rendered.includes('红字'));
+
+  const lines = rendered.split('\n').filter((line) => line.length > 0);
+  assert.ok(lines.length >= 6);
+  for (const line of lines) {
+    assert.equal(
+      displayWidth(line),
+      44,
+      `line width mismatch after control-char sanitization: got ${displayWidth(line)} for "${line}"`
+    );
+  }
+});
+
 test('safeReadJson handles mid-write truncated/corrupt JSON gracefully and updates when valid JSON lands', () => {
   const { safeReadJson } = require('../skill/scripts/hud');
 

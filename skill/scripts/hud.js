@@ -45,6 +45,17 @@ function stripAnsi(str) {
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
 }
 
+function sanitizeDisplayText(value, { allowNewlines = true } = {}) {
+  if (value == null) return '';
+  let text = stripAnsi(String(value))
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '  ');
+  if (!allowNewlines) {
+    text = text.replace(/\n+/g, ' ');
+  }
+  return text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
+}
+
 function isZeroWidthCodePoint(cp) {
   return (
     cp < 0x20 ||
@@ -344,27 +355,28 @@ function getProgressInfo(key, value) {
 }
 
 function splitBreakableUnits(text) {
+  const cleanText = sanitizeDisplayText(text, { allowNewlines: true });
   const units = [];
   let i = 0;
-  while (i < text.length) {
-    const code = text.codePointAt(i);
+  while (i < cleanText.length) {
+    const code = cleanText.codePointAt(i);
     const ch = String.fromCodePoint(code);
     if (ch === '\n') {
       units.push({ type: 'nl', text: '\n' });
       i += ch.length;
-    } else if (ch === ' ' || ch === '\t') {
+    } else if (ch === ' ') {
       let j = i + ch.length;
-      while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j += 1;
-      units.push({ type: 'ws', text: text.slice(i, j).replace(/\t/g, '  ') });
+      while (j < cleanText.length && cleanText[j] === ' ') j += 1;
+      units.push({ type: 'ws', text: cleanText.slice(i, j) });
       i = j;
     } else if (code >= 0x21 && code <= 0x7e) {
       let j = i + ch.length;
-      while (j < text.length) {
-        const nextCode = text.codePointAt(j);
+      while (j < cleanText.length) {
+        const nextCode = cleanText.codePointAt(j);
         if (nextCode < 0x21 || nextCode > 0x7e) break;
         j += 1;
       }
-      units.push({ type: 'word', text: text.slice(i, j) });
+      units.push({ type: 'word', text: cleanText.slice(i, j) });
       i = j;
     } else {
       units.push({ type: 'char', text: ch });
@@ -543,13 +555,14 @@ function buildProgressSegments(progress, barWidth) {
   const filled = Math.round(progress.pct * barWidth);
   const empty = Math.max(0, barWidth - filled);
   const fillStyle = progress.pct >= 0.7 ? 'barOk' : progress.pct >= 0.35 ? 'barMid' : 'barLow';
+  const label = sanitizeDisplayText(progress.label, { allowNewlines: false });
 
   return [
     { text: '[', style: 'muted', atomic: true },
     { text: '█'.repeat(filled), style: fillStyle, atomic: true },
     { text: '░'.repeat(empty), style: 'barEmpty', atomic: true },
     { text: '] ', style: 'muted', atomic: true },
-    { text: progress.label, style: 'number', atomic: true },
+    { text: label, style: 'number', atomic: true },
   ];
 }
 
@@ -567,7 +580,7 @@ function formatScalarSegments(value) {
   if (typeof value === 'number') {
     return [{ text: Number.isFinite(value) ? String(value) : '—', style: 'number' }];
   }
-  const str = String(value);
+  const str = sanitizeDisplayText(value, { allowNewlines: true });
   return [{ text: str || '—', style: str ? 'value' : 'muted' }];
 }
 
@@ -589,13 +602,14 @@ function emitWrappedRows(rows, segments, innerWidth, indent = 2) {
 
 function renderArrayField(ctx, key, value, indentStr, continuationIndent, diff) {
   const { rows, innerWidth, indentCols } = ctx;
+  const safeKey = sanitizeDisplayText(key, { allowNewlines: false });
   const indentSeg = indentStr ? [{ text: indentStr, atomic: true }] : [];
   if (value.length === 0) {
     emitWrappedRows(
       rows,
       [
         ...indentSeg,
-        { text: `${key}: `, style: 'label', atomic: true },
+        { text: `${safeKey}: `, style: 'label', atomic: true },
         { text: '(无)', style: 'muted' },
         ...renderDiffSegments(diff),
       ],
@@ -606,15 +620,19 @@ function renderArrayField(ctx, key, value, indentStr, continuationIndent, diff) 
   }
 
   const allScalars = value.every(isScalar);
-  const shortChips = allScalars && value.length <= 10 && value.every((item) => displayWidth(String(item ?? '')) <= 20);
+  const sanitizedScalars = allScalars
+    ? value.map((item) => sanitizeDisplayText(item ?? '', { allowNewlines: false }))
+    : null;
+  const shortChips =
+    allScalars && value.length <= 10 && sanitizedScalars.every((text) => displayWidth(text) <= 20);
   if (shortChips) {
     const segs = [
       ...indentSeg,
-      { text: `${key}: `, style: 'label', atomic: true },
+      { text: `${safeKey}: `, style: 'label', atomic: true },
     ];
-    value.forEach((item, idx) => {
+    sanitizedScalars.forEach((chipText, idx) => {
       if (idx > 0) segs.push({ text: ' ' });
-      segs.push({ text: `[${String(item ?? '')}]`, style: 'chip', atomic: true });
+      segs.push({ text: `[${chipText}]`, style: 'chip', atomic: true });
     });
     segs.push(...renderDiffSegments(diff));
     emitWrappedRows(rows, segs, innerWidth, continuationIndent);
@@ -623,7 +641,7 @@ function renderArrayField(ctx, key, value, indentStr, continuationIndent, diff) 
 
   emitWrappedRows(
     rows,
-    [...indentSeg, { text: `${key}:`, style: 'label' }, ...renderDiffSegments(diff)],
+    [...indentSeg, { text: `${safeKey}:`, style: 'label' }, ...renderDiffSegments(diff)],
     innerWidth,
     continuationIndent
   );
@@ -631,11 +649,17 @@ function renderArrayField(ctx, key, value, indentStr, continuationIndent, diff) 
   value.forEach((item, idx) => {
     const text = isPlainObject(item)
       ? visibleEntries(item)
-          .map(([k, v]) => `${k}: ${isScalar(v) ? v : JSON.stringify(v)}`)
+          .map(([k, v]) => {
+            const itemKey = sanitizeDisplayText(k, { allowNewlines: false });
+            const itemVal = isScalar(v)
+              ? sanitizeDisplayText(v, { allowNewlines: true })
+              : sanitizeDisplayText(JSON.stringify(v), { allowNewlines: false });
+            return `${itemKey}: ${itemVal}`;
+          })
           .join(' | ') || '(空)'
       : item == null
         ? `#${idx + 1}`
-        : String(item);
+        : sanitizeDisplayText(item, { allowNewlines: true });
     emitWrappedRows(
       rows,
       [
@@ -650,6 +674,7 @@ function renderArrayField(ctx, key, value, indentStr, continuationIndent, diff) 
 
 function renderFieldRows(ctx, key, value, fieldPath, depth) {
   const { rows, diffs, innerWidth, barWidth } = ctx;
+  const safeKey = sanitizeDisplayText(key, { allowNewlines: false });
   const indentCols = Math.min(Math.max(0, depth - 1) * 2, Math.max(0, innerWidth - 12));
   const indentStr = ' '.repeat(indentCols);
   const indentSeg = indentStr ? [{ text: indentStr, atomic: true }] : [];
@@ -659,24 +684,26 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
   const statusCard = isPlainObject(value) ? isStatusDetailPair(value) : null;
   if (statusCard) {
     const cardDiff = resolveStatusDiff(diffs, fieldPath);
-    const statusText = statusCard.status == null ? '—' : String(statusCard.status);
+    const cleanStatus = statusCard.status == null ? '' : sanitizeDisplayText(statusCard.status, { allowNewlines: true });
+    const statusText = cleanStatus || '—';
     emitWrappedRows(
       rows,
       [
         ...indentSeg,
-        { text: `${key}: `, style: 'label', atomic: true },
+        { text: `${safeKey}: `, style: 'label', atomic: true },
         { text: statusText, style: 'value' },
         ...renderDiffSegments(cardDiff),
       ],
       innerWidth,
       continuationIndent
     );
-    if (statusCard.detail !== undefined && statusCard.detail !== null && String(statusCard.detail).trim() !== '') {
+    const detailText = statusCard.detail == null ? '' : sanitizeDisplayText(statusCard.detail, { allowNewlines: true });
+    if (detailText.trim() !== '') {
       emitWrappedRows(
         rows,
         [
           { text: `${indentStr}  ↳ `, style: 'muted', atomic: true },
-          { text: String(statusCard.detail), style: 'detail' },
+          { text: detailText, style: 'detail' },
         ],
         innerWidth,
         Math.min(indentCols + 4, Math.max(0, innerWidth - 8))
@@ -693,7 +720,7 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
           rows,
           [
             ...indentSeg,
-            { text: `${key}: `, style: 'label', atomic: true },
+            { text: `${safeKey}: `, style: 'label', atomic: true },
             { text: '(空)', style: 'muted' },
             ...renderDiffSegments(diff),
           ],
@@ -705,14 +732,14 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
     }
 
     if (depth === 0) {
-      rows.push({ kind: 'divider', label: key, diff });
+      rows.push({ kind: 'divider', label: safeKey, diff });
       for (const [childKey, childVal] of childEntries) {
         renderFieldRows(ctx, childKey, childVal, `${fieldPath}.${childKey}`, 1);
       }
     } else {
       emitWrappedRows(
         rows,
-        [...indentSeg, { text: `▸ ${key}`, style: 'subSection' }, ...renderDiffSegments(diff)],
+        [...indentSeg, { text: `▸ ${safeKey}`, style: 'subSection' }, ...renderDiffSegments(diff)],
         innerWidth,
         continuationIndent
       );
@@ -724,7 +751,7 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
   }
 
   if (Array.isArray(value)) {
-    renderArrayField({ rows, innerWidth, indentCols }, key, value, indentStr, continuationIndent, diff);
+    renderArrayField({ rows, innerWidth, indentCols }, safeKey, value, indentStr, continuationIndent, diff);
     return;
   }
 
@@ -734,7 +761,7 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
       rows,
       [
         ...indentSeg,
-        { text: `${key}: `, style: 'label', atomic: true },
+        { text: `${safeKey}: `, style: 'label', atomic: true },
         ...buildProgressSegments(progress, barWidth),
         ...renderDiffSegments(diff),
       ],
@@ -748,7 +775,7 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
     rows,
     [
       ...indentSeg,
-      { text: `${key}: `, style: 'label', atomic: true },
+      { text: `${safeKey}: `, style: 'label', atomic: true },
       ...formatScalarSegments(value),
       ...renderDiffSegments(diff),
     ],
@@ -758,16 +785,17 @@ function renderFieldRows(ctx, key, value, fieldPath, depth) {
 }
 
 function formatDividerLine(label, diff, width, useColor) {
+  const safeLabel = sanitizeDisplayText(label, { allowNewlines: false });
   const badgeText = diff && diff.type === 'added' ? ' +NEW' : '';
-  const rawLabel = ` ${label}${badgeText} `;
+  const rawLabel = ` ${safeLabel}${badgeText} `;
   const maxLabelBudget = Math.max(4, width - 5);
-  let clippedLabel = label;
+  let clippedLabel = safeLabel;
 
   if (displayWidth(rawLabel) > maxLabelBudget) {
     clippedLabel = '';
     let acc = 0;
     const limit = Math.max(2, maxLabelBudget - displayWidth(badgeText) - 3);
-    for (const ch of label) {
+    for (const ch of safeLabel) {
       const w = charDisplayWidth(ch);
       if (acc + w > limit) break;
       clippedLabel += ch;
@@ -796,7 +824,8 @@ function renderState(state, prevState = null, options = {}) {
   const width = Math.max(24, Number.isFinite(options.width) ? Math.floor(options.width) : 64);
   const innerWidth = width - 4;
   const useColor = options.color !== false;
-  const title = options.title && String(options.title).trim() ? String(options.title).trim() : '🎭 MVU 状态面板';
+  const cleanTitle = options.title == null ? '' : sanitizeDisplayText(options.title, { allowNewlines: false }).trim();
+  const title = cleanTitle || '🎭 MVU 状态面板';
   const barWidth = innerWidth < 34 ? 6 : innerWidth < 50 ? 8 : 12;
 
   const diffs = computeDiffs(state, prevState);
