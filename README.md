@@ -92,4 +92,10 @@ npm test
 
 ## License
 
-[MIT](./LICENSE)
+详见 [LICENSE](./LICENSE)（**非商业用途许可**）：
+
+- **唯一权威源**：本项目的一切内容（代码、文档、许可证条款等）均以官方 GitHub 仓库 <https://github.com/huabuyu233/tavern-bard> 为准，npm 等其他渠道仅作发布分发之用。
+- **禁止商用**：未经作者 `huabuyu233` 书面授权，严禁将本项目或其衍生作品用于任何商业用途。
+- **允许二创**：无需事先授权即可进行二次创作，但任何二创项目**必须**同时满足：
+  1. 将二创项目代码托管于 GitHub 仓库；
+  2. 明确标明本仓库地址（`https://github.com/huabuyu233/tavern-bard`）及原作者名称（`huabuyu233`）。

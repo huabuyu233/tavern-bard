@@ -2,7 +2,8 @@
   "name": "tavern-bard",
   "version": "1.0.0",
   "description": "Cross-CLI SillyTavern roleplay skill for Claude Code, Codex, Gemini CLI, and Antigravity with pure-text normalization, dual-layer memory, and optional ANSI MVU HUD.",
-  "license": "MIT",
+  "author": "huabuyu233",
+  "license": "SEE LICENSE IN LICENSE",
   "bin": {
     "tavern-bard": "bin/tavern-bard.js"
   },
