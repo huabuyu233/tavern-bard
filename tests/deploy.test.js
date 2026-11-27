@@ -8,7 +8,7 @@ const path = require('node:path');
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DEPLOY_SCRIPT = path.join(REPO_ROOT, 'scripts', 'deploy.js');
 
-const { deploySkill } = require('../scripts/deploy');
+const { deploySkill, uninstallSkill, getDeployStatus, getDefaultConfig } = require('../scripts/deploy');
 
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tavern-bard-deploy-test-'));
@@ -267,5 +267,43 @@ test('deploy.js CLI supports --help, --dry-run (with isolated HOME/USERPROFILE),
     assert.match(dryRes.stdout, /SKILL\.md/);
     assert.equal(fs.existsSync(path.join(fakeHome, '.agents', 'skills', 'tavern-bard')), false);
     assert.equal(fs.readFileSync(legacyFile, 'utf8'), '// legacy\n');
+  });
+});
+
+test('getDefaultConfig does not include personal ai_agents_config paths', () => {
+  const cfg = getDefaultConfig('/tmp/fake-home');
+  assert.equal(cfg.legacyPaths.some((p) => p.includes('ai_agents_config')), false);
+  assert.equal(cfg.agentsSkillDir, path.join('/tmp/fake-home', '.agents', 'skills', 'tavern-bard'));
+});
+
+test('getDeployStatus and uninstallSkill inspect, dry-run, and remove skill + links cleanly', () => {
+  withTempDir((dir) => {
+    const repoSkillDir = createMockRepo(dir);
+    const home = path.join(dir, 'home');
+    const agentsSkillDir = path.join(home, '.agents', 'skills', 'tavern-bard');
+    const claudeLink = path.join(home, '.claude', 'skills', 'tavern-bard');
+    const geminiLink = path.join(home, '.gemini', 'config', 'skills', 'tavern-bard');
+
+    deploySkill({ repoSkillDir, agentsSkillDir, linkTargets: [claudeLink, geminiLink] });
+
+    const installed = getDeployStatus({ agentsSkillDir, linkTargets: [claudeLink, geminiLink] });
+    assert.equal(installed.agentsInstalled, true);
+    assert.equal(installed.links.length, 2);
+    assert.equal(installed.links.every((l) => l.exists && l.targetMatches), true);
+
+    const dry = uninstallSkill({ agentsSkillDir, linkTargets: [claudeLink, geminiLink], dryRun: true });
+    assert.equal(dry.dryRun, true);
+    assert.equal(dry.removed.length, 3);
+    assert.equal(fs.existsSync(agentsSkillDir), true);
+
+    const res = uninstallSkill({ agentsSkillDir, linkTargets: [claudeLink, geminiLink] });
+    assert.equal(res.removed.length, 3);
+    assert.equal(fs.existsSync(agentsSkillDir), false);
+    assert.equal(fs.existsSync(claudeLink), false);
+    assert.equal(fs.existsSync(geminiLink), false);
+
+    const after = getDeployStatus({ agentsSkillDir, linkTargets: [claudeLink, geminiLink] });
+    assert.equal(after.agentsInstalled, false);
+    assert.equal(after.links.every((l) => !l.exists && !l.targetMatches), true);
   });
 });

@@ -150,6 +150,81 @@ function deploySkill(options) {
 }
 
 /**
+ * Remove installed skill directory and any linked CLI entries.
+ * @param {object} options
+ * @param {string} options.agentsSkillDir
+ * @param {string[]} [options.linkTargets]
+ * @param {boolean} [options.dryRun]
+ * @returns {{ removed: string[], dryRun: boolean }}
+ */
+function uninstallSkill(options) {
+  if (!options || typeof options !== 'object') {
+    throw new Error('uninstallSkill requires an options object.');
+  }
+  const { agentsSkillDir, linkTargets = [], dryRun = false } = options;
+  if (!agentsSkillDir || typeof agentsSkillDir !== 'string') {
+    throw new Error('uninstallSkill requires a valid agentsSkillDir path.');
+  }
+
+  const isDryRun = Boolean(dryRun);
+  const candidates = [...linkTargets, agentsSkillDir];
+  const seen = new Set();
+  const removed = [];
+
+  for (const target of candidates) {
+    if (!target) continue;
+    const resolved = path.resolve(target);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+
+    if (pathExistsLstat(resolved)) {
+      if (!isDryRun) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      }
+      removed.push(resolved);
+    }
+  }
+
+  return { removed, dryRun: isDryRun };
+}
+
+/**
+ * Inspect installation status of the skill and CLI link targets.
+ * @param {object} options
+ * @param {string} options.agentsSkillDir
+ * @param {string[]} [options.linkTargets]
+ * @returns {{ agentsInstalled: boolean, agentsSkillDir: string, links: Array<{ path: string, exists: boolean, targetMatches: boolean }> }}
+ */
+function getDeployStatus(options) {
+  const { agentsSkillDir, linkTargets = [] } = options || {};
+  const resolvedAgents = path.resolve(agentsSkillDir);
+  const agentsInstalled = fs.existsSync(path.join(resolvedAgents, 'SKILL.md'));
+
+  let realAgents = resolvedAgents;
+  try {
+    realAgents = fs.realpathSync(resolvedAgents);
+  } catch {
+    // Keep resolvedAgents when directory does not exist yet.
+  }
+
+  const links = linkTargets.map((linkPath) => {
+    const resolvedLink = path.resolve(linkPath);
+    const exists = pathExistsLstat(resolvedLink);
+    let targetMatches = false;
+    if (exists) {
+      try {
+        targetMatches = fs.realpathSync(resolvedLink) === realAgents;
+      } catch {
+        targetMatches = false;
+      }
+    }
+    return { path: resolvedLink, exists, targetMatches };
+  });
+
+  return { agentsInstalled, agentsSkillDir: resolvedAgents, links };
+}
+
+/**
  * Resolve default live deployment configuration for the current user's home directory.
  * @param {string} [home]
  */
@@ -163,7 +238,6 @@ function getDefaultConfig(home = os.homedir()) {
     ],
     legacyPaths: [
       path.join(home, '.gemini', 'config', 'skills', 'tavern-bard'),
-      path.join(home, 'ai_agents_config', '.gemini', 'config', 'skills', 'tavern-bard'),
     ],
   };
 }
@@ -243,6 +317,8 @@ if (require.main === module) {
 
 module.exports = {
   deploySkill,
+  uninstallSkill,
+  getDeployStatus,
   getDefaultConfig,
   parseDeployArgs,
 };
