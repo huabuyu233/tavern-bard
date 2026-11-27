@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Tavern-Bard 项目全景</title>
+<link rel="stylesheet" href="htmlplan.css">
+<script src="htmlplan.js" defer></script>
+<style data-mock-shared>
+  .ui { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #1c1b19; background: #fff; border: 1px solid #ddd8cc; border-radius: 10px; overflow: hidden; }
+  .ui .hd { padding: 8px 12px; border-bottom: 1px solid #eee9dd; font-weight: 650; display: flex; gap: 8px; align-items: baseline; background: #faf8f3; }
+  .ui .hd small { color: #7a7467; font-weight: 400; }
+  .ui .row { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 7px 12px; border-bottom: 1px solid #f3efe6; }
+  .ui .row small { color: #7a7467; grid-column: 1 / -1; }
+  .ui .tag { display: inline-block; padding: 1px 6px; border-radius: 5px; font-size: 11px; background: #f2ede2; color: #4f4a40; }
+  .ui .ok { color: #1f7a52; font-weight: 600; }
+  .ui .warn { color: #b4541f; font-weight: 600; }
+</style>
+<body>
+
+<header>
+  <h1>Tavern-Bard 跨 CLI 角色扮演引擎全景</h1>
+  <doc-changes new="18"></doc-changes>
+  <details class="thread"><summary>设计初衷 · 4 条核心需求</summary>
+    <doc-quote via="prompt" from="用户">我想开发一个适用于任何cli agent的酒馆角色扮演skill，存放于~/.agents/skills/</doc-quote>
+    <doc-quote via="prompt" from="用户">当前工作目录就视为一个聊天记录的目录。也就是一个工作目录=一个对话。角色卡、预设、世界书、聊天记录以规范形式在工作目录组织好。</doc-quote>
+    <doc-quote via="prompt" from="用户">不是每个角色卡都有状态栏。前端状态栏直接一律转为mvu状态栏，无法完美转换允许舍弃部分状态栏换取稳定性并告知用户。预设依据json开关加载并可控。</doc-quote>
+    <doc-quote via="prompt" from="用户">以agent自带记忆为主，skill的memory记忆（摘要和完整全文两个目录）为辅，优先查阅摘要，需要细节再去读取全文，在消耗最少token下保证最大记忆。</doc-quote>
+  </details>
+</header>
+
+<main>
+<doc-plan>
+
+<!-- ═════ 1 ═════ -->
+<doc-claim>
+  <p>玩家提供一张角色卡即可在空目录一键生成纯文本对局工作区.</p>
+  <doc-mock frame="terminal" title="init.js · 一键初始化对局目录" w="470"><template><span class="dim">&gt;</span> node ~/.agents/skills/tavern-bard/scripts/init.js --card hero.png --preset Meowssiah.json --user 陈默
+<span class="g">✓</span> Initialized tavern-bard campaign in: D:\rp\demo
+  Character: 角煮风格平然色情-1115 | Player: 陈默
+  Greetings: 1 | Worldbook entries: 0 (disabled: 0, always: yes)
+  Preset: loaded (auto-disabled 4)
+  Status candidates: 3 <span class="dim">-&gt; inspect status/_raw_candidates.md</span>
+
+<span class="y" data-ref="files">生成的对局目录：</span>
+  AGENTS.md  CLAUDE.md  campaign.json
+  card/      worldbook/ preset/  status/  memory/</template>
+    <doc-pin ref="files" title="一目录一对局">Agent 自动读 AGENTS.md 接续剧情，无需外部数据库.</doc-pin>
+  </doc-mock>
+
+  <doc-claim>
+    <p>目标目录非空且无 campaign.json 时，init.js 以退出码 2 拦截写入.</p>
+    <doc-code src="skill/scripts/init.js" lines="70-87" hl="84-86" caption="防止误在代码仓库根目录直接写入角色扮演文件.">
+      <doc-pin line="85" tone="warn" title="退出码 2 触发询问">Skill 强制 Agent 停下来问用户选 --dir 子目录或 --force.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>card-loader 统一解包 PNG 与多版本 JSON，并把世界书拆成四类纯文本.</p>
+    <doc-calls title="初始化与卡片拆解调用栈" caption="点击带下划线的函数行可直接展开仓库源码.">
+<script type="text/plain">
++ **initWorkspace**(opts)                           @ skill/scripts/init.js:298
++   **assertTargetDirectoryReady**(dir, force)       @ skill/scripts/init.js:70
++   **loadCard**(cardPath)                           @ skill/scripts/lib/card-loader.js:213
++     **extractCardJsonFromPng**(buf)                @ skill/scripts/lib/card-loader.js:104
++     **unwrapCardObject**(rawObj)                   @ skill/scripts/lib/card-loader.js:154
++   **extractCardBundle**(card, extra, vars)         @ skill/scripts/lib/card-loader.js:393
++     **replaceMacros**(text, vars)                  @ skill/scripts/lib/text-clean.js:19
+</script>
+    </doc-calls>
+
+    <doc-claim at="skill/scripts/lib/card-loader.js:104">
+      <p><b>card-loader.js:104</b> · extractCardJsonFromPng()</p>
+      <doc-code src="skill/scripts/lib/card-loader.js" lines="104-142" hl="125-136" caption="优先读取 PNG 里的 ccv3 块，没有时回退到 chara 块.">
+        <doc-pin line="136" tone="ok" title="支持 tEXt 与压缩 iTXt">自动解压缩 zlib 编码的 UTF-8 角色卡数据.</doc-pin>
+      </doc-code>
+    </doc-claim>
+
+    <doc-claim at="skill/scripts/lib/card-loader.js:154">
+      <p><b>card-loader.js:154</b> · unwrapCardObject()</p>
+      <doc-code src="skill/scripts/lib/card-loader.js" lines="154-175" hl="169" caption="剥开 DSH 与 V2/V3 外壳，同时丢弃数 MB 的 tavern_helper 前端脚本.">
+        <doc-pin line="169" tone="info" title="过滤巨型前端脚本">9MB 角色卡瞬间瘦身为纯文本，绝不撑爆上下文.</doc-pin>
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 2 ═════ -->
+<doc-claim>
+  <p>预设按 JSON 开关编译为纯文本，保留破限与文末附加项并清洗伪工具.</p>
+  <doc-mock frame="terminal" title="preset.js · 查看与动态切换预设条目" w="470"><template><span class="dim">&gt;</span> node ~/.agents/skills/tavern-bard/scripts/preset.js list
+ 1  [ ]  （不要关）token重定义+初始化  (140 chars)
+ 4  [x]  用户角色  (198 chars)
+ 5  [x]  （不要关）召唤术  (730 chars)
+29  [x]  📏行动选项  (412 chars)
+30  [ ]  📏小总结  (360 chars)  <span class="dim"># 与 memory/summary 重复已自动关</span>
+31  [x]  📏猫猫留言~  (93 chars)
+
+<span class="dim">&gt;</span> node ~/.agents/skills/tavern-bard/scripts/preset.js toggle --disable "猫猫留言"
+<span class="g">✓</span> Updated 1 preset entry(s) and recompiled preset/active.md</template>
+  </doc-mock>
+
+  <doc-claim>
+    <p>导入时自动关闭重复小总结与裸思维链条目，并用 overrides.json 持久化修补.</p>
+    <doc-calls title="预设编译与开关管理调用栈" caption="每次 toggle 都会叠加 preset/overrides.json 再生成 active.md.">
+<script type="text/plain">
++ **preparePresetOnImport**(presetJson, vars)        @ skill/scripts/lib/preset-compiler.js:387
++   **resolvePromptOrder**(presetJson)               @ skill/scripts/lib/preset-compiler.js:80
++   **classifyAutoDisableReason**(entry)             @ skill/scripts/lib/preset-compiler.js:169
++   **compilePreset**(sourceJson, overrides, vars)   @ skill/scripts/lib/preset-compiler.js:336
++     **sanitizePromptContent**(raw, vars)           @ skill/scripts/lib/preset-compiler.js:290
++ **togglePreset**(opts)                             @ skill/scripts/preset.js:123
+</script>
+    </doc-calls>
+
+    <doc-claim at="skill/scripts/lib/preset-compiler.js:169">
+      <p><b>preset-compiler.js:169</b> · classifyAutoDisableReason()</p>
+      <doc-code src="skill/scripts/lib/preset-compiler.js" lines="169-208" hl="177-195" caption="区分独立思维链条与包含对话破限的召唤术外壳.">
+        <doc-pin line="188" tone="ok" title="保留破限对话">含多轮角色台词的破限条目不会被误关.</doc-pin>
+      </doc-code>
+    </doc-claim>
+
+    <doc-claim at="skill/scripts/lib/preset-compiler.js:290">
+      <p><b>preset-compiler.js:290</b> · sanitizePromptContent()</p>
+      <doc-code src="skill/scripts/lib/preset-compiler.js" lines="290-305" caption="幂等洗掉注释宏、catgodml 指令、伪 reply 工具与裸 XML 标签.">
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 3 ═════ -->
+<doc-claim>
+  <p>游玩期每轮零脚本调用，Agent 用原生读写工具维持纯净正文与双层记忆.</p>
+  <doc-machine name="rp" caption="点击状态查看对局从建档、纯文本演出、切章总结到跨会话恢复的完整周期.">
+<script type="text/plain">
+machine rp initial init
+state init     # init.js 拆解素材并可选生成 state.json
+state play     # 零脚本回合：纯净正文 + 静默追加全文
+state rollover # 换场或满 20 轮写 scenes.md 并切章
+state resume   # 新开终端按固定预算恢复上下文
+state saved final # 全部对局目录持久留在硬盘
+
+| init   | play     | rollover |
+| resume | saved    | .        |
+
+init     -open->    play     : 输出开场白
+init     -reload->  resume   : 已有对局
+resume   -restore-> play     : 读固定预算
+play     -turn20->  rollover : 满20轮或换场
+rollover -next->    play     : 开启下一章
+play     -exit->    saved    : 结束本次游玩
+</script>
+    <div data-state="init"><doc-mock frame="none" w="400"><template><div class="ui"><div class="hd">建档阶段 <small>init.js</small></div><div class="row"><b>产出</b><span class="tag">card/ + worldbook/ + preset/</span><small>若有状态栏候选，在开场白前向玩家汇报并给出 hud.js 命令.</small></div></div></template></doc-mock></div>
+    <div data-state="play"><doc-mock frame="none" w="400"><template><div class="ui"><div class="hd">单轮演出 <small>零脚本调用</small></div><div class="row"><b>主终端</b><span class="ok">纯文学正文 + Markdown 附加项</span><small>幕后静默追加 chapter-XX.md，有状态栏时同步改 state.json.</small></div></div></template></doc-mock></div>
+    <div data-state="rollover"><doc-mock frame="none" w="400"><template><div class="ui"><div class="hd">切章总结 <small>scene 切换 或 &gt;= 20 轮</small></div><div class="row"><b>写入</b><span class="tag">scenes.md + facts.md (&lt;=150行)</span><small>scenes.md 每攒满 5 景自动合并 1 条 arcs.md 大总结.</small></div></div></template></doc-mock></div>
+    <div data-state="resume"><doc-mock frame="none" w="400"><template><div class="ui"><div class="hd">低 Token 恢复 <small>固定读取预算</small></div><div class="row"><b>只读</b><span class="tag">facts + arcs + 近3景 + 当前章尾</span><small>绝不通读整本 memory/full/ 或全部世界书词条.</small></div></div></template></doc-mock></div>
+    <div data-state="saved"><doc-mock frame="none" w="400"><template><div class="ui"><div class="hd">随时归档 <small>1 目录 = 1 对局</small></div><div class="row"><b>持久化</b><span class="ok">天然支持 Git 分支存档</span><small>下次在任意 CLI Agent 打开该目录即可续玩.</small></div></div></template></doc-mock></div>
+  </doc-machine>
+
+  <doc-claim>
+    <p>SKILL.md 用正向三步配方锁死零出戏、禁代演、禁裸 XML 标签三条铁律.</p>
+    <doc-code src="skill/SKILL.md" lines="52-84" hl="61-71" collapsed caption="按需查索引 → 输出纯净 Markdown 正文 → 静默追加全文与状态.">
+      <doc-pin line="70" tone="risk" title="严禁标签泄露">彻底封堵 &lt;options&gt;、&lt;comment&gt;、&lt;thinking&gt; 与代码块状态栏.</doc-pin>
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>满 20 轮或换场追加 scenes.md 并切章，重开只读固定预算不扫全库.</p>
+    <doc-code src="skill/references/memory-guide.md" lines="31-60" wrap caption="facts.md 严格控制在 150 行内，追溯旧细节时先查摘要再 grep 对应章节.">
+    </doc-code>
+    <doc-ask id="v2_transcript">
+      <p>v2 是否增加从各家 CLI 会话日志自动抽取正文以省去每轮写两遍文件？</p>
+      <label><input type="radio" name="v2_transcript" value="keep_universal" checked> 保持通用显式写盘 <small>稳定支持所有 CLI Agent，无版本漂移风险</small></label>
+      <label><input type="radio" name="v2_transcript" value="add_adapter"> 增加常见 CLI 日志适配器 <small>为 Claude/Codex/Antigravity 省一半输出 token</small></label>
+    </doc-ask>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 4 ═════ -->
+<doc-claim>
+  <p>带状态栏的卡片统一转为 state.json，由副终端 hud.js 实时自适应渲染.</p>
+  <doc-mock frame="terminal" title="hud.js · 副终端实时 ANSI 状态面板" w="470"><template>╭──────────────────────────────────────────────────────╮
+│ 🎭 江亦雪 × 陈默                                     │
+├─ 角色状态 ───────────────────────────────────────────┤
+│ ▸ 生理与情绪                                         │
+│   好感度: [█████░░░░░░░] 45 <span class="g">(+5)</span>                     │
+│   体温: 36.6°C <span class="y">↑</span>                                     │
+│   当前心境: 克制微暖                                 │
+│     ↳ 神色微敛，因你盖上毛毯而略微松开防备           │
+│ 标签: [微醺] [警觉]                                  │
+╰──────────────────────────────────────────────────────╯</template>
+  </doc-mock>
+
+  <doc-claim>
+    <p>静态体测常数留作设定，前端 JS 公式字段透明舍弃并在开局前向玩家汇报.</p>
+    <doc-code src="skill/references/mvu-conversion.md" lines="27-35" wrap caption="复杂状态栏熔断准则：宁可舍弃无法稳定计算的字段，也不拖垮正文质量.">
+    </doc-code>
+  </doc-claim>
+
+  <doc-claim>
+    <p>hud.js 支持多层嵌套、中日韩双宽对齐、控制字符净化与半写 JSON 容错.</p>
+    <doc-calls title="副终端 HUD 监听与渲染链路" caption="fs.watch 配合 500ms 轮询兜底，写入截断时保持上一帧不崩溃.">
+<script type="text/plain">
++ **runWatch**(statePath, renderOpts)                 @ skill/scripts/hud.js:1024
++   **safeReadJson**(filePath, lastValid)            @ skill/scripts/hud.js:277
++   **renderState**(state, prevState, opts)          @ skill/scripts/hud.js:829
++     **computeDiffs**(curr, prev)                   @ skill/scripts/hud.js:211
++     **wrapSegments**(segments, maxWidth)           @ skill/scripts/hud.js:413
+</script>
+    </doc-calls>
+
+    <doc-claim at="skill/scripts/hud.js:277">
+      <p><b>hud.js:277</b> · safeReadJson()</p>
+      <doc-code src="skill/scripts/hud.js" lines="277-295" hl="286-294" caption="当 Agent 写到一半时跳过本次截断内容，等合法 JSON 落盘后立刻重绘.">
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 5 ═════ -->
+<doc-claim>
+  <p>开发仓库隔离源码、44 项测试与示例素材，仅把 9 个运行文件部署到全局.</p>
+  <doc-tree caption="tavern-bard 完整项目结构（位于 d:\Users\huabu\project\skill\tavern-bard）.">
+<script type="text/plain">
+tavern-bard/
+  skill/                           # 唯一部署进 ~/.agents/skills/tavern-bard/ 的运行包
+    SKILL.md                       # 核心行为规范、SOP 与防出戏铁律（134 行）
+    references/
+      mvu-conversion.md            # 前端状态栏转 MVU 与复杂度降级指南（103 行）
+      memory-guide.md              # 双层记忆模板、切章阈值与按需召回步骤（84 行）
+    scripts/
+      init.js                      # 对局工作区一键初始化与非空目录守卫（589 行）
+      preset.js                    # 预设 list / toggle / compile 命令行工具（299 行）
+      hud.js                       # 副终端自适应 ANSI 状态面板（1151 行）
+      lib/
+        text-clean.js              # 宏替换、注释剥离、前端标签清理与安全文件名（128 行）
+        card-loader.js             # PNG/JSON 解包、世界书分流与状态栏探测（555 行）
+        preset-compiler.js         # prompt_order 解析、破限保留与 XML 净化（518 行）
+  scripts/
+    deploy.js                      # 清除旧版联接并同步部署到 ~/.agents/.claude/.gemini（248 行）
+  tests/                           # 44 项 node:test 自动化测试 + 4 组 Skill TDD 压力记录
+    text-clean.test.js             # 文本与宏清洗单测
+    card-loader.test.js            # PNG/JSON 卡片、世界书与真实夹具单测
+    preset-compiler.test.js        # Meowssiah 真实预设编译与覆盖层单测
+    init.test.js                   # 工作区初始化、非空守卫与状态保留单测
+    preset-cli.test.js             # preset.js 命令行交互单测
+    hud.test.js                    # HUD 渲染、控制字符净化与半写容错单测
+    deploy.test.js                 # 隔离临时目录部署与断链清理单测
+    skill-tdd/scenarios.md         # 4 场景 RED 基线失误与 GREEN 验证实录
+  docs/                            # 设计文档、实施计划与当前交互式结构图
+    superpowers/specs/             # 2026-11-25-tavern-roleplay-design.md
+    superpowers/plans/             # 2026-11-25-tavern-bard-skill.md
+    architecture/                  # tavern-bard-overview.html（本页面）
+  示例资源/                         # 本地 PNG 卡片与 Meowssiah 预设夹具（已 .gitignore）
+</script>
+  </doc-tree>
+
+  <doc-claim>
+    <p>deploy.js 自动移除旧版残留并建立跨 CLI 目录联接，保证多端唯一真源.</p>
+    <doc-calls title="跨 CLI 部署脚本调用栈" caption="同时在 ~/.claude/skills 与 ~/.gemini/config/skills 创建 Junction.">
+<script type="text/plain">
++ **main**()                                         @ scripts/deploy.js:212
++   **getDefaultConfig**(home)                       @ scripts/deploy.js:156
++   **deploySkill**(config)                          @ scripts/deploy.js:60
++     **pathExistsLstat**(targetPath)                @ scripts/deploy.js:13
+</script>
+    </doc-calls>
+    <doc-ask id="v2_addon">
+      <p>如果后续扩充 v2 外围功能，你最先想加哪一项？</p>
+      <label><input type="radio" name="v2_addon" value="none" checked> 暂不扩充，先多跑几张真实卡片磨合手感和文风</label>
+      <label><input type="radio" name="v2_addon" value="export"> 一键将 memory/full 导出为排版精美的 Markdown 小说</label>
+      <label><input type="radio" name="v2_addon" value="dice"> 物理真随机跑团骰点工具（1d100 / 1d20+修正）</label>
+    </doc-ask>
+
+    <doc-claim at="scripts/deploy.js:60">
+      <p><b>deploy.js:60</b> · deploySkill()</p>
+      <doc-code src="scripts/deploy.js" lines="98-137" collapsed caption="先清空目标再复制 skill/，接着删除旧版路径并重建目录联接.">
+      </doc-code>
+    </doc-claim>
+  </doc-claim>
+</doc-claim>
+
+<!-- ═════ 共享契约与边界 ═════ -->
+<doc-claim aux="shared">
+  <p>共享契约：对局工作区目录与 campaign.json 元数据结构.</p>
+  <doc-schema id="workspace-contract" lang="ts" title="CampaignMeta &amp; 对局目录契约" caption="1 个对话工作目录里的所有文件都围绕这份契约协作.">
+<script type="text/plain">
+interface CampaignMeta {
+  char: string;                // 角色名，用于宏替换与 HUD 标题
+  user: string;                // 玩家称谓，默认 "旅人"
+  hasStatus: boolean;          // 是否已激活 state.json 与副终端 HUD
+  hasStatusCandidates: boolean;// init.js 是否探测到状态栏待转换候选
+  hasPreset: boolean;          // 是否已导入并编译 preset/active.md
+  currentChapter: number;      // 当前正在追加的章节号 (chapter-XX.md)
+  currentTurn: number;         // 当前累计回合数
+  createdAt: string;           // 首次建档 ISO 时间（刷新时不覆盖）
+}
+// 配套文件：AGENTS.md / CLAUDE.md / card/ / worldbook/ / preset/ / status/ / state.json / memory/{summary,full}/
+</script>
+  </doc-schema>
+</doc-claim>
+
+<doc-claim aux="scope">
+  <p>架构边界：保持不变的约束与 v1 明确不做的内容.</p>
+  <ul>
+    <li>全套运行时脚本仅使用 Node.js v18+ 标准库，零外部 npm 依赖，Windows 与 POSIX 通用.</li>
+    <li>仅在玩家选定的对局目录读写存档，绝不污染 <code>~/.agents/skills/tavern-bard/</code> 或篡改 CLI 工具配置.</li>
+    <li>不运行网页 DOM 或卡片自带的 <code>tavern_helper</code> JS 脚本，纯文学优先.</li>
+    <li>开发仓库中的 <code>tests/</code>、<code>docs/</code> 与 <code>示例资源/</code> 不会随部署复制到全局目录.</li>
+  </ul>
+</doc-claim>
+
+</doc-plan>
+</main>
+</body>
+</html>
