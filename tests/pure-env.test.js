@@ -674,9 +674,8 @@ test('agy first-class support: setupPureEnvironment & syncPureEnvironmentFiles m
     const agyAgentMd = fs.readFileSync(agyAgentPath, 'utf8');
     assert.match(
       agyAgentMd,
-      /^---\nname: tavern-bard\ndescription: .+\nmainAgent: true\nsubagent: false\n---\n/
+      /^---\nname: tavern-bard\ndescription: .+\ntools:\n  - read_file\n  - write_file\n  - edit_file\n  - run_command\nmainAgent: true\nsubagent: false\n---\n/
     );
-    assert.doesNotMatch(agyAgentMd, /^tools:/m);
     assert.ok(agyAgentMd.includes(PURE_ENV_MARKER));
     assert.ok(agyAgentMd.includes('小猫之神'));
 
