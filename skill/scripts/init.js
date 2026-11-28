@@ -228,12 +228,20 @@ function buildCampaignMeta({
       ? existingCampaign.createdAt
       : new Date().toISOString();
 
+  const pureEnvPrepared = Boolean(existingCampaign && existingCampaign.pureEnvPrepared);
+  const preferredCli =
+    existingCampaign && typeof existingCampaign.preferredCli === 'string' && existingCampaign.preferredCli.trim()
+      ? existingCampaign.preferredCli.trim()
+      : null;
+
   return {
     char,
     user,
     hasStatus,
     hasStatusCandidates,
     hasPreset,
+    pureEnvPrepared,
+    preferredCli,
     needsOnboardingAudit: Boolean(needsOnboardingAudit),
     currentChapter,
     currentTurn,
@@ -390,6 +398,8 @@ function initWorkspace(opts) {
       hasStatus: campaign.hasStatus,
       hasStatusCandidates,
       needsOnboardingAudit: campaign.needsOnboardingAudit,
+      pureEnvPrepared: campaign.pureEnvPrepared,
+      preferredCli: campaign.preferredCli,
       skillDir,
       activePresetMd,
     }),
@@ -397,6 +407,10 @@ function initWorkspace(opts) {
   );
   fs.writeFileSync(path.join(targetDir, 'CLAUDE.md'), '@AGENTS.md\n', 'utf8');
   fs.writeFileSync(path.join(targetDir, 'GEMINI.md'), '@AGENTS.md\n', 'utf8');
+  syncPureEnvironmentFiles(targetDir, {
+    activePresetMd: campaign.hasPreset ? activePresetMd : '',
+    skillDir,
+  });
 
   const auditPath = path.join(targetDir, '_onboarding_audit.md');
   if (campaign.needsOnboardingAudit) {

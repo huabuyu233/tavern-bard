@@ -308,6 +308,11 @@ test('runPlayCommand sets up pure environment, updates campaign.json, and spawns
     assert.equal(codexRes.cli, 'codex');
     assert.equal(codexRes.isResume, false);
     assert.equal(fs.existsSync(path.join(campDir, '.tavern-bard', 'system-prompt.md')), true);
+    // Must NOT fabricate configs for uninstalled/unrequested CLIs
+    assert.equal(fs.existsSync(path.join(campDir, '.claude', 'agents', 'tavern-bard.md')), false);
+    assert.equal(fs.existsSync(path.join(campDir, '.gemini', '.env')), false);
+    assert.equal(fs.existsSync(path.join(campDir, 'opencode.json')), false);
+    assert.equal(fs.existsSync(path.join(campDir, '.opencode', 'agents', 'tavern-bard.md')), false);
 
     const savedCamp1 = JSON.parse(fs.readFileSync(path.join(campDir, 'campaign.json'), 'utf8'));
     assert.equal(savedCamp1.pureEnvPrepared, true);
@@ -404,5 +409,31 @@ test('runPlayCommand sets up pure environment, updates campaign.json, and spawns
     assert.equal(calls.length, 4);
     assert.equal(calls[3].cmd, '/usr/local/bin/opencode');
     assert.deepEqual(calls[3].args, []);
+
+    // 5. Switching CLI when needsPureEnvSetup is false still syncs AGENTS.md with new preferredCli & Pure tip
+    fs.writeFileSync(
+      path.join(campDir, 'AGENTS.md'),
+      '# Tavern-Bard Roleplay Campaign: 江亦雪 × 陈默\n\n- `C:\\fake\\SKILL.md`\n',
+      'utf8'
+    );
+    const staleCamp = JSON.parse(fs.readFileSync(path.join(campDir, 'campaign.json'), 'utf8'));
+    staleCamp.preferredCli = 'opencode';
+    staleCamp.pureEnvPrepared = false;
+    fs.writeFileSync(path.join(campDir, 'campaign.json'), `${JSON.stringify(staleCamp, null, 2)}\n`, 'utf8');
+
+    const switchRes = runPlayCommand({
+      dir: campDir,
+      cli: 'claude',
+      dryRun: false,
+      platform: 'linux',
+      env: { PATH: '/usr/local/bin' },
+      commandExists: (name) => name === 'claude',
+      resolveExecutable: () => ({ path: '/usr/local/bin/claude', kind: 'bin' }),
+      spawnImpl: fakeSpawn,
+    });
+    assert.equal(switchRes.cli, 'claude');
+    const syncedAgents = fs.readFileSync(path.join(campDir, 'AGENTS.md'), 'utf8');
+    assert.match(syncedAgents, /## Pure Environment Resume Tip/);
+    assert.match(syncedAgents, /preferred CLI: `claude`/);
   });
 });

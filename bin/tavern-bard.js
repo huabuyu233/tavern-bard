@@ -12,11 +12,13 @@ const {
 } = require('../scripts/deploy');
 const {
   SUPPORTED_PURE_CLIS,
+  isCampaignResume,
   detectAgentEnvironment,
   setupPureEnvironment,
   syncPureEnvironmentFiles,
   resolveCliExecutable,
 } = require('../skill/scripts/lib/pure-env');
+const { syncWorkspaceAgentsMd } = require('../skill/scripts/lib/workspace-agents');
 
 const SUPPORTED_COMMANDS = new Set(['install', 'uninstall', 'status', 'play']);
 
@@ -192,16 +194,6 @@ function needsPureEnvSetup(targetDir, cli) {
   return false;
 }
 
-function computeIsResume(targetDir, campaign) {
-  let hasOpening = false;
-  const ch1Path = path.join(targetDir, 'memory', 'full', 'chapter-01.md');
-  if (fs.existsSync(ch1Path)) {
-    const ch1 = fs.readFileSync(ch1Path, 'utf8');
-    hasOpening = /^##\s+Opening\b/m.test(ch1) || ch1.includes('## Opening');
-  }
-  return Number(campaign.currentTurn) > 0 || hasOpening;
-}
-
 function buildCliInvocation(cli, initialPrompt, targetDir, env) {
   const cliEnv = { ...env };
   switch (cli) {
@@ -321,23 +313,27 @@ function runPlayCommand({
         dir: targetDir,
         agent: resolvedCli,
         env,
-        commandExists: () => true,
+        commandExists: checkCliExists,
         platform,
       });
-    } else {
-      syncPureEnvironmentFiles(targetDir);
-    }
-
-    campaign = readCampaignJson(campaignPath, targetDir);
-    if (campaign.preferredCli !== resolvedCli || campaign.pureEnvPrepared !== true) {
-      campaign.preferredCli = resolvedCli;
-      campaign.pureEnvPrepared = true;
-      fs.writeFileSync(campaignPath, `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
       campaign = readCampaignJson(campaignPath, targetDir);
+    } else {
+      let campaignChanged = false;
+      if (campaign.preferredCli !== resolvedCli || campaign.pureEnvPrepared !== true) {
+        campaign.preferredCli = resolvedCli;
+        campaign.pureEnvPrepared = true;
+        fs.writeFileSync(campaignPath, `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
+        campaign = readCampaignJson(campaignPath, targetDir);
+        campaignChanged = true;
+      }
+      if (campaignChanged) {
+        syncWorkspaceAgentsMd(targetDir);
+      }
+      syncPureEnvironmentFiles(targetDir);
     }
   }
 
-  const isResume = computeIsResume(targetDir, campaign);
+  const isResume = isCampaignResume(targetDir, campaign);
   const initialPrompt = isResume ? DAY2_RESUME_PROMPT : DAY1_INITIAL_PROMPT;
   const { cliArgs, cliEnv } = buildCliInvocation(resolvedCli, initialPrompt, targetDir, env);
 
@@ -459,7 +455,7 @@ function main() {
       `  Files (${res.copiedFiles.length}): ${res.copiedFiles.join(', ')}`,
       `  Linked (${res.linked.length}): ${res.linked.join(', ')}`,
       '',
-      'Ready! Open any empty folder in Claude Code, Codex, Gemini CLI, or Antigravity and say: "开始角色扮演".',
+      'Ready! Open any empty folder in Claude Code, Codex, OpenCode, Gemini CLI, or Antigravity and say: "开始角色扮演".',
     ];
     process.stdout.write(`${lines.join('\n')}\n`);
   } catch (err) {

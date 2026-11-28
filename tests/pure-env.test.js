@@ -589,5 +589,20 @@ test('env-setup.js CLI handles --help, --json, supported CLI host, and unsupport
     assert.match(codexTextRes.stdout, /system-prompt\.md/);
     assert.match(codexTextRes.stdout, /npx tavern-bard play/);
     assert.match(codexTextRes.stdout, /model_instructions_file="\.tavern-bard\/system-prompt\.md"/);
+
+    // 4. Desktop host preserves existing valid preferredCli instead of clobbering it with installedClis[0]
+    const { setupPureEnvironment } = require('../skill/scripts/lib/pure-env');
+    const campPath = path.join(campaignDir, 'campaign.json');
+    const campBeforeDesktop = JSON.parse(fs.readFileSync(campPath, 'utf8'));
+    campBeforeDesktop.preferredCli = 'gemini';
+    fs.writeFileSync(campPath, `${JSON.stringify(campBeforeDesktop, null, 2)}\n`, 'utf8');
+
+    const preservedRes = setupPureEnvironment({
+      dir: campaignDir,
+      agent: 'desktop',
+      commandExists: (name) => name === 'codex' || name === 'gemini',
+    });
+    assert.equal(preservedRes.preferredCli, 'gemini');
+    assert.equal(JSON.parse(fs.readFileSync(campPath, 'utf8')).preferredCli, 'gemini');
   });
 });

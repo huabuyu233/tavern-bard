@@ -21,9 +21,14 @@ function isCliFlag(token) {
 }
 
 function takeFlagValue(argv, index, inlineVal, flagName) {
-  if (inlineVal !== undefined) return { value: inlineVal, nextIndex: index };
+  if (inlineVal !== undefined) {
+    if (!inlineVal.trim()) {
+      throw new Error(`Option ${flagName} requires a non-empty value`);
+    }
+    return { value: inlineVal, nextIndex: index };
+  }
   const next = argv[index + 1];
-  if (next === undefined || isCliFlag(next)) {
+  if (next === undefined || isCliFlag(next) || !next.trim()) {
     throw new Error(`Option ${flagName} requires a value`);
   }
   return { value: next, nextIndex: index + 1 };

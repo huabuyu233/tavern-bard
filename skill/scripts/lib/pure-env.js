@@ -418,9 +418,13 @@ function setupPureEnvironment({
     upsertGeminiEnv(path.join(targetDir, '.gemini', '.env'));
   }
 
+  const existingPreferred =
+    campaign.preferredCli && envInfo.installedClis.includes(campaign.preferredCli)
+      ? campaign.preferredCli
+      : null;
   const preferredCli = envInfo.supportedPureHost
     ? envInfo.hostAgent
-    : envInfo.installedClis[0] || campaign.preferredCli || null;
+    : existingPreferred || envInfo.installedClis[0] || campaign.preferredCli || null;
 
   campaign.pureEnvPrepared = true;
   campaign.preferredCli = preferredCli;
@@ -510,6 +514,7 @@ function syncPureEnvironmentFiles(targetDir, { activePresetMd, skillDir } = {}) 
 module.exports = {
   PURE_ENV_MARKER,
   SUPPORTED_PURE_CLIS,
+  isCampaignResume,
   buildPureSystemPromptMd,
   resolveCliExecutable,
   detectAgentEnvironment,

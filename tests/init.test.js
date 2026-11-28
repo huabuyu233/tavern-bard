@@ -369,7 +369,7 @@ test('initWorkspace preserves live campaign.json progress when refreshing an act
       dir: campaignDir,
     });
 
-    // Simulate an active campaign in progress
+    // Simulate an active campaign in progress with pureEnvPrepared + preferredCli
     const campaignPath = path.join(campaignDir, 'campaign.json');
     const originalCreatedAt = '2026-01-15T08:30:00.000Z';
     const liveCampaign = {
@@ -378,6 +378,8 @@ test('initWorkspace preserves live campaign.json progress when refreshing an act
       hasStatus: true,
       hasStatusCandidates: true,
       hasPreset: true,
+      pureEnvPrepared: true,
+      preferredCli: 'codex',
       currentChapter: 3,
       currentTurn: 42,
       createdAt: originalCreatedAt,
@@ -386,8 +388,22 @@ test('initWorkspace preserves live campaign.json progress when refreshing an act
     };
     fs.writeFileSync(campaignPath, `${JSON.stringify(liveCampaign, null, 2)}\n`, 'utf8');
     fs.writeFileSync(path.join(campaignDir, 'state.json'), JSON.stringify({ 好感度: 80 }), 'utf8');
+    fs.mkdirSync(path.join(campaignDir, '.tavern-bard'), { recursive: true });
+    fs.writeFileSync(path.join(campaignDir, '.tavern-bard', 'system-prompt.md'), 'stale pure prompt', 'utf8');
 
-    // Re-run initWorkspace without --preset and without --force
+    // Update card name and re-run initWorkspace without --preset and without --force
+    fs.writeFileSync(
+      cardPath,
+      JSON.stringify({
+        spec: 'chara_card_v2',
+        data: {
+          name: '江亦雪新版',
+          description: '更新后的角色描述',
+          first_mes: '你好，{{user}}。',
+        },
+      }),
+      'utf8'
+    );
     const refreshed = initWorkspace({
       cardPath,
       user: '陈默',
@@ -400,10 +416,17 @@ test('initWorkspace preserves live campaign.json progress when refreshing an act
     assert.equal(after.currentTurn, 42);
     assert.equal(after.hasStatus, true);
     assert.equal(after.hasPreset, true);
+    assert.equal(after.pureEnvPrepared, true);
+    assert.equal(after.preferredCli, 'codex');
     assert.equal(after.presetSource, 'Meowssiah-2.1.6.json');
     assert.deepEqual(refreshed.campaign, after);
     assert.equal(fs.existsSync(path.join(campaignDir, 'preset', 'source.json')), true);
     assert.equal(fs.existsSync(path.join(campaignDir, 'state.json')), true);
+    assert.match(fs.readFileSync(path.join(campaignDir, 'AGENTS.md'), 'utf8'), /## Pure Environment Resume Tip/);
+    assert.match(
+      fs.readFileSync(path.join(campaignDir, '.tavern-bard', 'system-prompt.md'), 'utf8'),
+      /江亦雪新版/
+    );
   });
 });
 

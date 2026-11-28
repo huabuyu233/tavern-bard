@@ -94,7 +94,7 @@ tavern-bard/
 │   ├── SKILL.md                # Agent 行为规范、SOP 与防出戏铁律
 │   ├── references/             # 状态栏转 MVU 指南 & 双层记忆协议
 │   └── scripts/                # init.js / preset.js / env-setup.js / hud.js 及 lib/（含 pure-env.js）解析库
-└── tests/                      # 48 项 node:test 自动化测试与 Skill TDD 压力测试记录
+└── tests/                      # 61 项 node:test 自动化测试与 Skill TDD 压力测试记录
 ```
 
 ## 本地测试
