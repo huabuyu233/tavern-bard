@@ -12,6 +12,7 @@ const {
   inspectPresetAnomalies,
 } = require('./lib/preset-compiler');
 const { syncWorkspaceAgentsMd, buildOnboardingAuditMd } = require('./lib/workspace-agents');
+const { syncPureEnvironmentFiles } = require('./lib/pure-env');
 
 const DEFAULT_VARS = { char: 'Character', user: '旅人' };
 
@@ -140,6 +141,7 @@ function togglePreset({ dir, enable = [], disable = [] } = {}) {
   }
   fs.writeFileSync(ctx.activePath, ensureTrailingNewline(activeMd), 'utf8');
   syncWorkspaceAgentsMd(ctx.dir, { activePresetMd: activeMd });
+  syncPureEnvironmentFiles(ctx.dir, { activePresetMd: activeMd });
 
   return {
     changed,
@@ -154,6 +156,7 @@ function compileWorkspacePreset({ dir } = {}) {
   const activeMd = compilePreset(ctx.sourceJson, ctx.overrides, ctx.vars);
   fs.writeFileSync(ctx.activePath, ensureTrailingNewline(activeMd), 'utf8');
   syncWorkspaceAgentsMd(ctx.dir, { activePresetMd: activeMd });
+  syncPureEnvironmentFiles(ctx.dir, { activePresetMd: activeMd });
   return {
     activePath: ctx.activePath,
     activeMd,
@@ -249,6 +252,10 @@ function loadPreset({ dir, presetPath, keepOverrides = false, skillDir } = {}) {
     activePresetMd: activeMd,
     skillDir: resolvedSkillDir,
   });
+  const syncedPureEnv = syncPureEnvironmentFiles(targetDir, {
+    activePresetMd: activeMd,
+    skillDir: resolvedSkillDir,
+  });
 
   return {
     dir: targetDir,
@@ -258,6 +265,7 @@ function loadPreset({ dir, presetPath, keepOverrides = false, skillDir } = {}) {
     autoDisabled: prepared.autoDisabled,
     activeMd,
     syncedAgents,
+    syncedPureEnv,
   };
 }
 

@@ -7,6 +7,7 @@ const path = require('node:path');
 const { loadCard, loadWorldbook, extractCardBundle } = require('./lib/card-loader');
 const { preparePresetOnImport, compilePreset, inspectPresetAnomalies } = require('./lib/preset-compiler');
 const { buildAgentsMd, syncWorkspaceAgentsMd, buildOnboardingAuditMd } = require('./lib/workspace-agents');
+const { syncPureEnvironmentFiles } = require('./lib/pure-env');
 
 class NonEmptyDirectoryError extends Error {
   /**
@@ -511,11 +512,16 @@ function finalizeOnboardingAudit(opts = {}) {
     activePresetMd: recompiledPreset ? activePresetMd : undefined,
     skillDir,
   });
+  const syncedPureEnv = syncPureEnvironmentFiles(targetDir, {
+    activePresetMd: recompiledPreset ? activePresetMd : undefined,
+    skillDir,
+  });
 
   return {
     dir: targetDir,
     campaign,
     syncedAgentsMd,
+    syncedPureEnv,
     recompiledPreset,
   };
 }
