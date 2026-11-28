@@ -92,6 +92,32 @@ function createMinimalCampaign(dir, campaignOverrides = {}) {
 const DAY1_PROMPT = '请读取角色卡、常驻世界书与开场白，正式输出开场剧情（若存在多个开场白请供我选择）。';
 const DAY2_PROMPT = '请按低Token恢复协议读取存档与近期记录，用两三句话沉浸式回顾上次停下的场景，等待我的下一步行动。';
 
+function makeCleanEnv(overrides = {}) {
+  const env = { ...process.env };
+  const agentVars = [
+    'CLAUDECODE',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CODEX_SANDBOX',
+    'CODEX_CI',
+    'CODEX_THREAD_ID',
+    'CODEX_MANAGED_BY_NPM',
+    'OPENCODE',
+    'OPENCODE_CLIENT',
+    'GEMINI_CLI',
+    'ANTIGRAVITY_CLI_ALIAS',
+    'ANTIGRAVITY_AGENT',
+    'ANTIGRAVITY_VSCODE_HOST',
+    'ANTIGRAVITY_LS_VERSION',
+    'AGY_ENABLE_HUB',
+    'CURSOR_TRACE_ID',
+    'WINDSURF_SESSION',
+  ];
+  for (const key of agentVars) {
+    delete env[key];
+  }
+  return { ...env, ...overrides };
+}
+
 test('parseArgs and --help support play command and options', () => {
   const { parseArgs } = require('../bin/tavern-bard');
 
@@ -127,19 +153,19 @@ test('parseArgs and --help support play command and options', () => {
   assert.throws(() => parseArgs(['status', '--cli', 'codex']), /play/i);
 });
 
-test('bin/tavern-bard.js play --dry-run inspects Day-1 and Day-2 campaigns across codex/claude/opencode/gemini', () => {
+test('bin/tavern-bard.js play --dry-run inspects Day-1 and Day-2 campaigns across codex/claude/opencode/gemini/agy', () => {
   withTempDir((root) => {
     const binDir = path.join(root, 'fake-bin');
     createFakeCliShim(binDir, 'codex');
     createFakeCliShim(binDir, 'claude');
     createFakeCliShim(binDir, 'opencode');
     createFakeCliShim(binDir, 'gemini');
+    createFakeCliShim(binDir, 'agy');
 
-    const isolatedEnv = {
-      ...process.env,
+    const isolatedEnv = makeCleanEnv({
       PATH: binDir,
       Path: binDir,
-    };
+    });
 
     const day1Dir = path.join(root, 'day1');
     createMinimalCampaign(day1Dir, { currentTurn: 0 });
@@ -191,6 +217,38 @@ test('bin/tavern-bard.js play --dry-run inspects Day-1 and Day-2 campaigns acros
     assert.ok(geminiRes.stdout.includes(DAY1_PROMPT));
     assert.ok(geminiRes.stdout.includes(path.join(day1Dir, '.tavern-bard', 'system-prompt.md')));
 
+    const agyRes = spawnSync(
+      process.execPath,
+      [BIN_SCRIPT, 'play', '--cli', 'agy', '--dir', day1Dir, '--dry-run'],
+      { cwd: REPO_ROOT, encoding: 'utf8', env: isolatedEnv }
+    );
+    assert.equal(agyRes.status, 0, agyRes.stderr);
+    const agyArgsMatch = agyRes.stdout.match(/^\s*Args:\s*(.+)$/m);
+    assert.ok(agyArgsMatch, agyRes.stdout);
+    assert.deepEqual(JSON.parse(agyArgsMatch[1]), ['--agent', 'tavern-bard', '-i', DAY1_PROMPT]);
+
+    const antigravityAliasRes = spawnSync(
+      process.execPath,
+      [BIN_SCRIPT, 'play', '--cli=antigravity', '--dir', day1Dir, '--dry-run'],
+      { cwd: REPO_ROOT, encoding: 'utf8', env: isolatedEnv }
+    );
+    assert.equal(antigravityAliasRes.status, 0, antigravityAliasRes.stderr);
+    assert.match(antigravityAliasRes.stdout, /CLI:\s*agy\b/);
+
+    // Host env priority: ANTIGRAVITY_AGENT=1 picks agy instead of codex when preferredCli is unset
+    const agyHostEnv = makeCleanEnv({
+      PATH: binDir,
+      Path: binDir,
+      ANTIGRAVITY_AGENT: '1',
+    });
+    const hostPickRes = spawnSync(
+      process.execPath,
+      [BIN_SCRIPT, 'play', '--dir', day1Dir, '--dry-run'],
+      { cwd: REPO_ROOT, encoding: 'utf8', env: agyHostEnv }
+    );
+    assert.equal(hostPickRes.status, 0, hostPickRes.stderr);
+    assert.match(hostPickRes.stdout, /CLI:\s*agy\b/);
+
     // Day-2 via currentTurn > 0
     const day2TurnDir = path.join(root, 'day2-turn');
     createMinimalCampaign(day2TurnDir, { currentTurn: 3, preferredCli: 'claude' });
@@ -230,8 +288,8 @@ test('bin/tavern-bard.js play fails cleanly on missing campaign.json, invalid/mi
     const binDir = path.join(root, 'fake-bin');
     createFakeCliShim(binDir, 'codex');
 
-    const envWithCodex = { ...process.env, PATH: binDir, Path: binDir };
-    const envEmptyPath = { ...process.env, PATH: emptyDir, Path: emptyDir };
+    const envWithCodex = makeCleanEnv({ PATH: binDir, Path: binDir });
+    const envEmptyPath = makeCleanEnv({ PATH: emptyDir, Path: emptyDir });
 
     const noCampaignRes = spawnSync(
       process.execPath,
@@ -250,7 +308,8 @@ test('bin/tavern-bard.js play fails cleanly on missing campaign.json, invalid/mi
       { cwd: REPO_ROOT, encoding: 'utf8', env: envWithCodex }
     );
     assert.notEqual(badCliRes.status, 0);
-    assert.match(badCliRes.stderr, /codex, claude, opencode, gemini/);
+    assert.match(badCliRes.stderr, /codex, claude, opencode, gemini, agy/);
+    assert.match(badCliRes.stderr, /--launch-arg/);
 
     const missingValRes = spawnSync(
       process.execPath,
@@ -435,5 +494,73 @@ test('runPlayCommand sets up pure environment, updates campaign.json, and spawns
     const syncedAgents = fs.readFileSync(path.join(campDir, 'AGENTS.md'), 'utf8');
     assert.match(syncedAgents, /## Pure Environment Resume Tip/);
     assert.match(syncedAgents, /preferred CLI: `claude`/);
+
+    // 6. agy launch creates .agents/agents/tavern-bard/agent.md and spawns agy.exe
+    const agyRes = runPlayCommand({
+      dir: campDir,
+      cli: 'agy',
+      dryRun: false,
+      platform: 'win32',
+      env: { PATH: 'C:\\agy\\bin' },
+      commandExists: (name) => name === 'agy',
+      resolveExecutable: () => ({ path: 'C:\\agy\\bin\\agy.exe', kind: 'exe' }),
+      spawnImpl: fakeSpawn,
+    });
+    assert.equal(agyRes.cli, 'agy');
+    assert.equal(
+      fs.existsSync(path.join(campDir, '.agents', 'agents', 'tavern-bard', 'agent.md')),
+      true
+    );
+    assert.equal(calls[5].cmd, 'C:\\agy\\bin\\agy.exe');
+    assert.deepEqual(calls[5].args, ['--agent', 'tavern-bard', '-i', DAY2_PROMPT]);
+
+    // 7. Custom pureLauncher in campaign.json works in --dry-run and runPlayCommand
+    const customDir = path.join(root, 'custom-camp');
+    createMinimalCampaign(customDir, {
+      currentTurn: 1,
+      preferredCli: 'my-cli',
+      pureEnvPrepared: true,
+      pureLauncher: {
+        cli: 'my-cli',
+        args: ['--sys', '{systemPrompt}', '--msg', '{prompt}'],
+        env: { CUSTOM_PROMPT_FILE: '{systemPromptAbs}' },
+      },
+    });
+    fs.mkdirSync(path.join(customDir, '.tavern-bard'), { recursive: true });
+    fs.writeFileSync(path.join(customDir, '.tavern-bard', 'system-prompt.md'), '# Pure\n', 'utf8');
+
+    const customBin = path.join(root, 'custom-bin');
+    createFakeCliShim(customBin, 'my-cli');
+    const dryCustomRes = spawnSync(
+      process.execPath,
+      [BIN_SCRIPT, 'play', '--dir', customDir, '--dry-run'],
+      { cwd: REPO_ROOT, encoding: 'utf8', env: makeCleanEnv({ PATH: customBin, Path: customBin }) }
+    );
+    assert.equal(dryCustomRes.status, 0, dryCustomRes.stderr);
+    assert.match(dryCustomRes.stdout, /CLI:\s*my-cli\b/);
+    assert.ok(dryCustomRes.stdout.includes('.tavern-bard/system-prompt.md'));
+    assert.ok(dryCustomRes.stdout.includes('Env CUSTOM_PROMPT_FILE:'));
+
+    const customSpawnRes = runPlayCommand({
+      dir: customDir,
+      dryRun: false,
+      platform: 'linux',
+      env: { PATH: '/custom/bin' },
+      commandExists: (name) => name === 'my-cli',
+      resolveExecutable: () => ({ path: '/custom/bin/my-cli', kind: 'bin' }),
+      spawnImpl: fakeSpawn,
+    });
+    assert.equal(customSpawnRes.cli, 'my-cli');
+    assert.equal(calls[6].cmd, '/custom/bin/my-cli');
+    assert.deepEqual(calls[6].args, [
+      '--sys',
+      '.tavern-bard/system-prompt.md',
+      '--msg',
+      DAY2_PROMPT,
+    ]);
+    assert.equal(
+      calls[6].opts.env.CUSTOM_PROMPT_FILE,
+      path.join(path.resolve(customDir), '.tavern-bard', 'system-prompt.md')
+    );
   });
 });

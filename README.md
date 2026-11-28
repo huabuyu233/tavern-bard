@@ -25,8 +25,8 @@
 
 ## 运行模式说明
 
-- **纯净系统提示词模式（推荐终端 CLI：Codex / Claude Code / OpenCode / Gemini CLI）**：初始化后通过官方接口将顶层编程助手系统提示词替换为纯净酒馆叙事引擎（.tavern-bard/system-prompt.md），保留全部文件读写工具（双层记忆、按需世界书、hud.js 状态栏），次日回到对局目录运行 npx tavern-bard play 即可直接续玩；
-- **标准兼容模式（Antigravity / Cursor 等封闭桌面端 / 群聊 Bot）**：因宿主未开放系统提示词替换接口，通过 AGENTS.md / CLAUDE.md / GEMINI.md 兼容运行。
+- **纯净系统提示词模式（内置支持 Antigravity agy / Codex / Claude Code / OpenCode / Gemini CLI，且支持通过 env-setup 接入任意带官方系统提示词替换参数的 CLI）**：初始化后通过官方接口将顶层编程助手系统提示词替换为纯净酒馆叙事引擎，保留全部文件读写工具（双层记忆、按需世界书、hud.js 状态栏），次日回到对局目录运行 npx tavern-bard play 即可直接续玩；
+- **标准兼容模式（Cursor / Windsurf 等暂未开放官方系统提示词替换接口的桌面端或群聊 Bot）**：通过工作区指令文件兼容运行。
 
 ---
 
@@ -59,7 +59,7 @@ npx github:huabuyu233/tavern-bard
 ```bash
 npx tavern-bard status                                                                 # 查看安装与各 CLI 联接状态
 npx tavern-bard --dry-run                                                              # 预览安装路径与文件，不修改磁盘
-npx tavern-bard play [--cli <codex|claude|opencode|gemini>] [--dir <dir>] [--dry-run] # 启动或续玩纯净模式
+npx tavern-bard play [--cli <agy|codex|claude|opencode|gemini|custom>] [--dir <dir>] [--dry-run] # 启动或续玩纯净模式
 npx tavern-bard uninstall                                                              # 卸载 Skill 及联接
 ```
 
@@ -94,7 +94,7 @@ tavern-bard/
 │   ├── SKILL.md                # Agent 行为规范、SOP 与防出戏铁律
 │   ├── references/             # 状态栏转 MVU 指南 & 双层记忆协议
 │   └── scripts/                # init.js / preset.js / env-setup.js / hud.js 及 lib/（含 pure-env.js）解析库
-└── tests/                      # 61 项 node:test 自动化测试与 Skill TDD 压力测试记录
+└── tests/                      # 63 项 node:test 自动化测试与 Skill TDD 压力测试记录
 ```
 
 ## 本地测试

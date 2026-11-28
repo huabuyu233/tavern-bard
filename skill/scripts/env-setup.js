@@ -5,14 +5,16 @@ const { setupPureEnvironment } = require('./lib/pure-env');
 
 function getHelpText() {
   return `Usage:
-  node env-setup.js [--dir <dir>] [--agent <name>] [--skill-dir <path>] [--json]
+  node env-setup.js [--dir <dir>] [--agent <name>] [--launch-arg <arg> ...] [--launch-env <KEY=VAL> ...] [--skill-dir <path>] [--json]
 
 Options:
-  --dir <dir>         Campaign workspace directory (default: current directory)
-  --agent <name>      Explicit host agent override (auto, codex, claude, opencode, gemini, antigravity, cursor, windsurf, desktop)
-  --skill-dir <path>  Skill installation directory referenced in system-prompt.md
-  --json              Output machine-readable JSON result
-  --help, -h          Show this help message
+  --dir <dir>              Campaign workspace directory (default: current directory)
+  --agent <name>           Explicit host agent override (auto, agy, codex, claude, opencode, gemini, <custom-cli>, desktop)
+  --launch-arg <arg>       Repeatable launch argument template for a custom CLI (supports {systemPrompt}, {systemPromptAbs}, {prompt})
+  --launch-env <KEY=VAL>   Repeatable env var template for a custom CLI (supports {systemPrompt}, {systemPromptAbs}, {prompt})
+  --skill-dir <path>       Skill installation directory referenced in system-prompt.md
+  --json                   Output machine-readable JSON result
+  --help, -h               Show this help message
 `;
 }
 
@@ -20,7 +22,7 @@ function isCliFlag(token) {
   return token === '-h' || token.startsWith('--');
 }
 
-function takeFlagValue(argv, index, inlineVal, flagName) {
+function takeFlagValue(argv, index, inlineVal, flagName, { allowDash = false } = {}) {
   if (inlineVal !== undefined) {
     if (!inlineVal.trim()) {
       throw new Error(`Option ${flagName} requires a non-empty value`);
@@ -28,7 +30,7 @@ function takeFlagValue(argv, index, inlineVal, flagName) {
     return { value: inlineVal, nextIndex: index };
   }
   const next = argv[index + 1];
-  if (next === undefined || isCliFlag(next) || !next.trim()) {
+  if (next === undefined || (!allowDash && isCliFlag(next)) || !next.trim()) {
     throw new Error(`Option ${flagName} requires a value`);
   }
   return { value: next, nextIndex: index + 1 };
@@ -39,6 +41,8 @@ function parseEnvSetupArgs(argv) {
     dir: undefined,
     agent: 'auto',
     skillDir: undefined,
+    launchArgs: [],
+    launchEnv: {},
     json: false,
     help: false,
   };
@@ -70,6 +74,23 @@ function parseEnvSetupArgs(argv) {
       const taken = takeFlagValue(argv, i, inlineVal, flag);
       opts.skillDir = taken.value;
       i = taken.nextIndex;
+    } else if (flag === '--launch-arg') {
+      const taken = takeFlagValue(argv, i, inlineVal, flag, { allowDash: true });
+      opts.launchArgs.push(taken.value);
+      i = taken.nextIndex;
+    } else if (flag === '--launch-env') {
+      const taken = takeFlagValue(argv, i, inlineVal, flag);
+      const sepIdx = taken.value.indexOf('=');
+      if (sepIdx <= 0) {
+        throw new Error('Option --launch-env requires KEY=VALUE format');
+      }
+      const envKey = taken.value.slice(0, sepIdx).trim();
+      const envVal = taken.value.slice(sepIdx + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey)) {
+        throw new Error(`Invalid environment variable name "${envKey}" in --launch-env`);
+      }
+      opts.launchEnv[envKey] = envVal;
+      i = taken.nextIndex;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -83,7 +104,7 @@ function formatTextReport(result) {
   const lines = [
     `Prepared pure narrator system-prompt in: ${result.dir}`,
     `  System prompt: ${result.systemPromptPath}`,
-    `  Host agent: ${result.hostAgent} (${result.supportedPureHost ? 'pure system-prompt supported' : 'desktop/unsupported host'})`,
+    `  Host agent: ${result.hostAgent} (${result.supportedPureHost ? 'pure system-prompt supported' : 'no built-in pure launcher matched'})`,
     `  Configured CLIs: ${configured}`,
   ];
 
@@ -96,16 +117,18 @@ function formatTextReport(result) {
     }
   } else {
     lines.push('');
-    lines.push(`说明：很遗憾，当前宿主（${result.hostAgent}）未提供官方系统提示词替换入口，无法在当前宿主中开启纯净酒馆主 Agent 环境。`);
+    lines.push(`说明：未能自动匹配宿主（${result.hostAgent}）的内置纯净启动器。`);
+    lines.push('若当前或本机其他 CLI Agent 支持官方系统提示词文件/自定义代理参数（指向 .tavern-bard/system-prompt.md），可直接按其官方文档使用，或运行以下命令将其注册到 npx tavern-bard play：');
+    lines.push('  node env-setup.js --agent <cli> --launch-arg <flag> --launch-arg "{systemPrompt}" --launch-arg "{prompt}"');
     if (result.installedClis.length > 0) {
-      lines.push('检测到本机已安装以下支持纯净模式的 CLI，可在对应终端中运行：');
+      lines.push('检测到本机已安装以下内置支持纯净模式的 CLI，可在对应终端中运行：');
       for (const cli of result.installedClis) {
         lines.push(`  - npx tavern-bard play --cli ${cli}`);
       }
     } else {
-      lines.push('未在本机 PATH 中检测到 codex / claude / opencode / gemini CLI。');
+      lines.push('未在本机 PATH 中检测到 agy / codex / claude / opencode / gemini CLI。');
     }
-    lines.push('若希望继续在当前宿主游玩普通兼容模式（AGENTS.md 注入），请直接回复："直接在这里开始"。');
+    lines.push('若当前宿主确实无 CLI 或无官方系统提示词替换入口（仅桌面端可用），也可直接回复："直接在这里开始" 以标准 AGENTS.md 兼容模式游玩。');
   }
 
   return `${lines.join('\n')}\n`;
@@ -131,6 +154,8 @@ function main() {
       dir: opts.dir,
       agent: opts.agent,
       skillDir: opts.skillDir,
+      launchArgs: opts.launchArgs,
+      launchEnv: opts.launchEnv,
     });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

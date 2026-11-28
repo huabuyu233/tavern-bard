@@ -12,22 +12,17 @@ const {
 } = require('../scripts/deploy');
 const {
   SUPPORTED_PURE_CLIS,
+  normalizeAgentName,
   isCampaignResume,
   detectAgentEnvironment,
   setupPureEnvironment,
   syncPureEnvironmentFiles,
   resolveCliExecutable,
+  expandPureLauncher,
 } = require('../skill/scripts/lib/pure-env');
 const { syncWorkspaceAgentsMd } = require('../skill/scripts/lib/workspace-agents');
 
 const SUPPORTED_COMMANDS = new Set(['install', 'uninstall', 'status', 'play']);
-
-const CLI_ALIASES = {
-  'claude-code': 'claude',
-  'gemini-cli': 'gemini',
-  'codex-cli': 'codex',
-  'open-code': 'opencode',
-};
 
 const DAY1_INITIAL_PROMPT =
   '请读取角色卡、常驻世界书与开场白，正式输出开场剧情（若存在多个开场白请供我选择）。';
@@ -48,7 +43,7 @@ function getHelpText() {
     '',
     'Usage:',
     '  npx tavern-bard [install] [--dry-run]',
-    '  npx tavern-bard play [--cli <codex|claude|opencode|gemini>] [--dir <dir>] [--dry-run]',
+    '  npx tavern-bard play [--cli <agy|codex|claude|opencode|gemini|custom>] [--dir <dir>] [--dry-run]',
     '  npx tavern-bard status',
     '  npx tavern-bard uninstall [--dry-run]',
     '',
@@ -59,7 +54,7 @@ function getHelpText() {
     '  uninstall   Remove installed skill and CLI links',
     '',
     'Options:',
-    '  --cli <name>   CLI to launch for play (codex, claude, opencode, gemini)',
+    '  --cli <name>   CLI to launch for play (built-in: agy, codex, claude, opencode, gemini; or custom pureLauncher)',
     '  --dir <dir>    Campaign directory for play (default: current directory)',
     '  --dry-run      Preview changes or launch arguments without modifying disk',
     '  -v, --version  Show package version',
@@ -145,8 +140,7 @@ function parseArgs(argv) {
 }
 
 function normalizeCliName(rawCli) {
-  const lowered = String(rawCli).trim().toLowerCase();
-  return CLI_ALIASES[lowered] || lowered;
+  return normalizeAgentName(rawCli);
 }
 
 function readCampaignJson(campaignPath, targetDir) {
@@ -191,26 +185,32 @@ function needsPureEnvSetup(targetDir, cli) {
     const content = fs.readFileSync(geminiEnvPath, 'utf8');
     return !/^\s*GEMINI_SYSTEM_MD\s*=\s*\.tavern-bard\/system-prompt\.md\s*$/m.test(content);
   }
+  if (cli === 'agy') {
+    return !fs.existsSync(path.join(targetDir, '.agents', 'agents', 'tavern-bard', 'agent.md'));
+  }
   return false;
 }
 
-function buildCliInvocation(cli, initialPrompt, targetDir, env) {
+function buildCliInvocation(cli, initialPrompt, targetDir, env, pureLauncher = null) {
   const cliEnv = { ...env };
   switch (cli) {
     case 'codex':
       return {
         cliArgs: ['-c', 'model_instructions_file=".tavern-bard/system-prompt.md"', initialPrompt],
         cliEnv,
+        customEnv: {},
       };
     case 'claude':
       return {
         cliArgs: ['--system-prompt-file', '.tavern-bard/system-prompt.md', initialPrompt],
         cliEnv,
+        customEnv: {},
       };
     case 'opencode':
       return {
         cliArgs: [],
         cliEnv,
+        customEnv: {},
       };
     case 'gemini':
       return {
@@ -219,10 +219,20 @@ function buildCliInvocation(cli, initialPrompt, targetDir, env) {
           ...cliEnv,
           GEMINI_SYSTEM_MD: path.join(targetDir, '.tavern-bard', 'system-prompt.md'),
         },
+        customEnv: {},
+      };
+    case 'agy':
+      return {
+        cliArgs: ['--agent', 'tavern-bard', '-i', initialPrompt],
+        cliEnv,
+        customEnv: {},
       };
     default:
+      if (pureLauncher && pureLauncher.cli && normalizeCliName(pureLauncher.cli) === cli) {
+        return expandPureLauncher(pureLauncher, { initialPrompt, targetDir, env });
+      }
       throw new Error(
-        `Unsupported CLI "${cli}". Supported CLIs: ${SUPPORTED_PURE_CLIS.join(', ')}.`
+        `Unsupported CLI "${cli}". Built-in CLIs: ${SUPPORTED_PURE_CLIS.join(', ')}. To register any other CLI, run env-setup.js --agent <cli> --launch-arg ...`
       );
   }
 }
@@ -269,15 +279,8 @@ function runPlayCommand({
 } = {}) {
   const targetDir = path.resolve(dir || process.cwd());
 
-  let normalizedExplicitCli = null;
-  if (cli !== undefined && cli !== null) {
-    normalizedExplicitCli = normalizeCliName(cli);
-    if (!SUPPORTED_PURE_CLIS.includes(normalizedExplicitCli)) {
-      throw new Error(
-        `Unsupported CLI "${cli}". Supported CLIs: ${SUPPORTED_PURE_CLIS.join(', ')}.`
-      );
-    }
-  }
+  const normalizedExplicitCli =
+    cli !== undefined && cli !== null ? normalizeCliName(cli) : null;
 
   const campaignPath = path.join(targetDir, 'campaign.json');
   if (!fs.existsSync(campaignPath)) {
@@ -285,6 +288,21 @@ function runPlayCommand({
   }
 
   let campaign = readCampaignJson(campaignPath, targetDir);
+
+  const isRegisteredCustomCli = (name) =>
+    Boolean(
+      campaign.pureLauncher &&
+        campaign.pureLauncher.cli &&
+        normalizeCliName(campaign.pureLauncher.cli) === name
+    );
+  const isSupportedOrRegistered = (name) =>
+    SUPPORTED_PURE_CLIS.includes(name) || isRegisteredCustomCli(name);
+
+  if (normalizedExplicitCli && !isSupportedOrRegistered(normalizedExplicitCli)) {
+    throw new Error(
+      `Unsupported CLI "${cli}". Built-in CLIs: ${SUPPORTED_PURE_CLIS.join(', ')}. To register any other CLI, run env-setup.js --agent <cli> --launch-arg ...`
+    );
+  }
 
   const resolver = resolveExecutable || resolveCliExecutable;
   const checkCliExists = commandExists || ((name) => Boolean(resolver(name, { env, platform })));
@@ -298,12 +316,22 @@ function runPlayCommand({
     resolvedCli = normalizedExplicitCli;
   } else {
     const preferred = campaign.preferredCli ? normalizeCliName(campaign.preferredCli) : null;
-    if (preferred && SUPPORTED_PURE_CLIS.includes(preferred) && checkCliExists(preferred)) {
+    const customCli =
+      campaign.pureLauncher && campaign.pureLauncher.cli
+        ? normalizeCliName(campaign.pureLauncher.cli)
+        : null;
+    if (preferred && isSupportedOrRegistered(preferred) && checkCliExists(preferred)) {
       resolvedCli = preferred;
+    } else if (envInfo.supportedPureHost && checkCliExists(envInfo.hostAgent)) {
+      resolvedCli = envInfo.hostAgent;
+    } else if (customCli && checkCliExists(customCli)) {
+      resolvedCli = customCli;
     } else if (envInfo.installedClis.length > 0) {
       resolvedCli = envInfo.installedClis[0];
     } else {
-      throw new Error('No supported pure-mode CLI (codex, claude, opencode, gemini) found in PATH.');
+      throw new Error(
+        `No supported pure-mode CLI (${SUPPORTED_PURE_CLIS.join(', ')}) found in PATH (and no custom pureLauncher registered in campaign.json).`
+      );
     }
   }
 
@@ -335,7 +363,13 @@ function runPlayCommand({
 
   const isResume = isCampaignResume(targetDir, campaign);
   const initialPrompt = isResume ? DAY2_RESUME_PROMPT : DAY1_INITIAL_PROMPT;
-  const { cliArgs, cliEnv } = buildCliInvocation(resolvedCli, initialPrompt, targetDir, env);
+  const { cliArgs, cliEnv, customEnv } = buildCliInvocation(
+    resolvedCli,
+    initialPrompt,
+    targetDir,
+    env,
+    campaign.pureLauncher || null
+  );
 
   if (dryRun) {
     return {
@@ -346,6 +380,7 @@ function runPlayCommand({
       args: cliArgs,
       prompt: initialPrompt,
       env: cliEnv,
+      customEnv,
     };
   }
 
@@ -379,6 +414,7 @@ function runPlayCommand({
     spawnCommand,
     spawnArgs,
     env: cliEnv,
+    customEnv,
   };
 }
 
@@ -419,6 +455,11 @@ function main() {
         ];
         if (res.cli === 'gemini' && res.env && res.env.GEMINI_SYSTEM_MD) {
           lines.push(`  GEMINI_SYSTEM_MD: ${res.env.GEMINI_SYSTEM_MD}`);
+        }
+        if (res.customEnv && typeof res.customEnv === 'object') {
+          for (const [k, v] of Object.entries(res.customEnv)) {
+            lines.push(`  Env ${k}: ${v}`);
+          }
         }
         process.stdout.write(`${lines.join('\n')}\n`);
       }

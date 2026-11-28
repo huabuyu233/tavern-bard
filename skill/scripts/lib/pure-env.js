@@ -6,16 +6,25 @@ const path = require('node:path');
 const { syncWorkspaceAgentsMd } = require('./workspace-agents');
 
 const PURE_ENV_MARKER = '[TAVERN-BARD PURE NARRATOR ENVIRONMENT ACTIVE]';
-const SUPPORTED_PURE_CLIS = ['codex', 'claude', 'opencode', 'gemini'];
+const SUPPORTED_PURE_CLIS = ['codex', 'claude', 'opencode', 'gemini', 'agy'];
 
 const AGENT_ALIASES = {
   'claude-code': 'claude',
   'gemini-cli': 'gemini',
   'codex-cli': 'codex',
   'open-code': 'opencode',
+  antigravity: 'agy',
+  'antigravity-cli': 'agy',
+  'agy-cli': 'agy',
   ide: 'desktop',
   gui: 'desktop',
 };
+
+function normalizeAgentName(raw) {
+  if (raw == null) return '';
+  const lowered = String(raw).trim().toLowerCase();
+  return AGENT_ALIASES[lowered] || lowered;
+}
 
 function stripBom(text) {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
@@ -86,6 +95,20 @@ function buildClaudeAgentMd(purePromptMd) {
     '---',
     'name: tavern-bard',
     'description: Pure fictional roleplay narrator engine for Tavern-Bard',
+    '---',
+    '',
+    body,
+  ].join('\n') + '\n';
+}
+
+function buildAgyAgentMd(purePromptMd) {
+  const body = String(purePromptMd || '').trimEnd();
+  return [
+    '---',
+    'name: tavern-bard',
+    'description: Pure fictional roleplay narrator engine for Tavern-Bard',
+    'mainAgent: true',
+    'subagent: false',
     '---',
     '',
     body,
@@ -266,8 +289,7 @@ function detectAgentEnvironment({
   commandExists,
   platform = process.platform,
 } = {}) {
-  const rawExplicit = explicitAgent == null ? 'auto' : String(explicitAgent).trim().toLowerCase();
-  const normalizedExplicit = AGENT_ALIASES[rawExplicit] || rawExplicit;
+  const normalizedExplicit = explicitAgent == null ? 'auto' : normalizeAgentName(explicitAgent);
 
   let hostAgent;
   if (normalizedExplicit && normalizedExplicit !== 'auto') {
@@ -280,8 +302,13 @@ function detectAgentEnvironment({
     hostAgent = 'opencode';
   } else if (env.GEMINI_CLI) {
     hostAgent = 'gemini';
-  } else if (env.ANTIGRAVITY_CLI_ALIAS || env.ANTIGRAVITY_AGENT) {
-    hostAgent = 'antigravity';
+  } else if (
+    env.ANTIGRAVITY_CLI_ALIAS ||
+    env.ANTIGRAVITY_AGENT ||
+    env.ANTIGRAVITY_VSCODE_HOST ||
+    env.ANTIGRAVITY_LS_VERSION
+  ) {
+    hostAgent = 'agy';
   } else if (env.CURSOR_TRACE_ID) {
     hostAgent = 'cursor';
   } else if (env.WINDSURF_SESSION) {
@@ -301,14 +328,62 @@ function detectAgentEnvironment({
   };
 }
 
+function isValidCustomCliName(name) {
+  return (
+    typeof name === 'string' &&
+    /^[a-zA-Z0-9._-]+$/.test(name) &&
+    !new Set(['auto', 'unknown', 'desktop']).has(name)
+  );
+}
+
+/**
+ * Expand `{systemPrompt}`, `{systemPromptAbs}`, and `{prompt}` placeholders
+ * inside a custom `pureLauncher` definition.
+ * @param {{ cli?: string, args?: string[], env?: Record<string, string> }} launcher
+ * @param {{ initialPrompt?: string, targetDir?: string, env?: object }} [opts]
+ * @returns {{ cliArgs: string[], cliEnv: object, customEnv: Record<string, string> }}
+ */
+function expandPureLauncher(
+  launcher,
+  { initialPrompt = '', targetDir = process.cwd(), env = {} } = {}
+) {
+  const resolvedDir = path.resolve(targetDir || process.cwd());
+  const relPrompt = '.tavern-bard/system-prompt.md';
+  const absPrompt = path.join(resolvedDir, '.tavern-bard', 'system-prompt.md');
+  const substitute = (str) =>
+    String(str)
+      .replace(/\{systemPromptAbs\}/g, absPrompt)
+      .replace(/\{systemPrompt\}/g, relPrompt)
+      .replace(/\{prompt\}/g, initialPrompt);
+
+  const rawArgs = launcher && Array.isArray(launcher.args) ? launcher.args : [];
+  const cliArgs = rawArgs.map((arg) => substitute(arg));
+
+  const customEnv = {};
+  if (launcher && launcher.env && typeof launcher.env === 'object' && !Array.isArray(launcher.env)) {
+    for (const [k, v] of Object.entries(launcher.env)) {
+      customEnv[k] = substitute(v);
+    }
+  }
+
+  return {
+    cliArgs,
+    cliEnv: { ...env, ...customEnv },
+    customEnv,
+  };
+}
+
 /**
  * Format native CLI launch command for display to the user.
  * @param {string} cli
- * @param {{ isResume?: boolean }} [opts]
+ * @param {{ isResume?: boolean, pureLauncher?: object | null, targetDir?: string }} [opts]
  * @returns {string | null}
  */
-function formatNativeLaunchCommand(cli, { isResume = false } = {}) {
-  const normalized = cli ? String(cli).trim().toLowerCase() : '';
+function formatNativeLaunchCommand(
+  cli,
+  { isResume = false, pureLauncher = null, targetDir = process.cwd() } = {}
+) {
+  const normalized = normalizeAgentName(cli);
   const prompt = isResume ? '继续游戏' : '开始游戏';
   switch (normalized) {
     case 'codex':
@@ -319,8 +394,28 @@ function formatNativeLaunchCommand(cli, { isResume = false } = {}) {
       return 'opencode';
     case 'gemini':
       return `gemini -i "${prompt}"`;
-    default:
+    case 'agy':
+      return `agy --agent tavern-bard -i "${prompt}"`;
+    default: {
+      if (
+        pureLauncher &&
+        pureLauncher.cli &&
+        normalizeAgentName(pureLauncher.cli) === normalized
+      ) {
+        const { cliArgs, customEnv } = expandPureLauncher(pureLauncher, {
+          initialPrompt: prompt,
+          targetDir,
+          env: {},
+        });
+        const quoteIfNeeded = (val) =>
+          /[\s"']/.test(val) ? `"${String(val).replace(/"/g, '\\"')}"` : String(val);
+        const envPrefix = Object.entries(customEnv).map(
+          ([k, v]) => `${k}=${quoteIfNeeded(v)}`
+        );
+        return [...envPrefix, normalized, ...cliArgs.map(quoteIfNeeded)].join(' ');
+      }
       return null;
+    }
   }
 }
 
@@ -337,6 +432,8 @@ function setupPureEnvironment({
   env = process.env,
   commandExists,
   platform = process.platform,
+  launchArgs,
+  launchEnv,
 } = {}) {
   const targetDir = path.resolve(dir || process.cwd());
   const campaignPath = path.join(targetDir, 'campaign.json');
@@ -358,12 +455,30 @@ function setupPureEnvironment({
     }
   }
 
+  const checkCmd = commandExists || ((cli) => Boolean(resolveCliExecutable(cli, { env, platform })));
   const envInfo = detectAgentEnvironment({
     env,
     explicitAgent: agent,
-    commandExists,
+    commandExists: checkCmd,
     platform,
   });
+
+  const hasCustomSpec =
+    (Array.isArray(launchArgs) && launchArgs.length > 0) ||
+    (launchEnv && typeof launchEnv === 'object' && Object.keys(launchEnv).length > 0);
+  if (hasCustomSpec) {
+    if (!isValidCustomCliName(envInfo.hostAgent)) {
+      throw new Error('Custom --launch-arg/--launch-env requires a concrete CLI name via --agent <cli>.');
+    }
+    const customLauncher = {
+      cli: envInfo.hostAgent,
+      args: Array.isArray(launchArgs) ? [...launchArgs] : [],
+    };
+    if (launchEnv && typeof launchEnv === 'object' && Object.keys(launchEnv).length > 0) {
+      customLauncher.env = { ...launchEnv };
+    }
+    campaign.pureLauncher = customLauncher;
+  }
 
   const purePromptMd = buildPureSystemPromptMd({
     char: campaign.char || 'Character',
@@ -418,11 +533,40 @@ function setupPureEnvironment({
     upsertGeminiEnv(path.join(targetDir, '.gemini', '.env'));
   }
 
-  const existingPreferred =
-    campaign.preferredCli && envInfo.installedClis.includes(campaign.preferredCli)
-      ? campaign.preferredCli
+  if (configureClis.includes('agy')) {
+    const agyAgentDir = path.join(targetDir, '.agents', 'agents', 'tavern-bard');
+    fs.mkdirSync(agyAgentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agyAgentDir, 'agent.md'),
+      buildAgyAgentMd(purePromptMd),
+      'utf8'
+    );
+  }
+
+  const activeCustomLauncher =
+    !envInfo.supportedPureHost &&
+    campaign.pureLauncher &&
+    campaign.pureLauncher.cli &&
+    normalizeAgentName(campaign.pureLauncher.cli) === envInfo.hostAgent
+      ? campaign.pureLauncher
       : null;
-  const preferredCli = envInfo.supportedPureHost
+  const effectiveSupportedPureHost = envInfo.supportedPureHost || Boolean(activeCustomLauncher);
+
+  const normalizedExistingPref = campaign.preferredCli ? normalizeAgentName(campaign.preferredCli) : null;
+  const isExistingPrefCustom = Boolean(
+    normalizedExistingPref &&
+      campaign.pureLauncher &&
+      campaign.pureLauncher.cli &&
+      normalizeAgentName(campaign.pureLauncher.cli) === normalizedExistingPref &&
+      checkCmd(normalizedExistingPref)
+  );
+  const existingPreferred =
+    normalizedExistingPref &&
+    (envInfo.installedClis.includes(normalizedExistingPref) || isExistingPrefCustom)
+      ? normalizedExistingPref
+      : null;
+
+  const preferredCli = effectiveSupportedPureHost
     ? envInfo.hostAgent
     : existingPreferred || envInfo.installedClis[0] || campaign.preferredCli || null;
 
@@ -438,17 +582,22 @@ function setupPureEnvironment({
   const isResume = isCampaignResume(targetDir, campaign);
   const launchCommand = 'npx tavern-bard play';
   const nativeLaunchCommand = preferredCli
-    ? formatNativeLaunchCommand(preferredCli, { isResume })
+    ? formatNativeLaunchCommand(preferredCli, {
+        isResume,
+        pureLauncher: campaign.pureLauncher || null,
+        targetDir,
+      })
     : null;
 
   return {
     dir: targetDir,
     systemPromptPath,
     hostAgent: envInfo.hostAgent,
-    supportedPureHost: envInfo.supportedPureHost,
+    supportedPureHost: effectiveSupportedPureHost,
     installedClis: envInfo.installedClis,
     preferredCli,
     configuredClis: configureClis,
+    pureLauncher: campaign.pureLauncher || null,
     launchCommand,
     nativeLaunchCommand,
     isResume,
@@ -508,16 +657,23 @@ function syncPureEnvironmentFiles(targetDir, { activePresetMd, skillDir } = {}) 
     fs.writeFileSync(claudeAgentPath, buildClaudeAgentMd(purePromptMd), 'utf8');
   }
 
+  const agyAgentPath = path.join(resolvedDir, '.agents', 'agents', 'tavern-bard', 'agent.md');
+  if (fs.existsSync(agyAgentPath)) {
+    fs.writeFileSync(agyAgentPath, buildAgyAgentMd(purePromptMd), 'utf8');
+  }
+
   return true;
 }
 
 module.exports = {
   PURE_ENV_MARKER,
   SUPPORTED_PURE_CLIS,
+  normalizeAgentName,
   isCampaignResume,
   buildPureSystemPromptMd,
   resolveCliExecutable,
   detectAgentEnvironment,
+  expandPureLauncher,
   formatNativeLaunchCommand,
   setupPureEnvironment,
   syncPureEnvironmentFiles,
