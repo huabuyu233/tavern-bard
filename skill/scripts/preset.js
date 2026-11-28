@@ -4,7 +4,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { compilePreset, listPresetEntries, togglePresetEntries } = require('./lib/preset-compiler');
+const {
+  compilePreset,
+  listPresetEntries,
+  togglePresetEntries,
+  preparePresetOnImport,
+  inspectPresetAnomalies,
+} = require('./lib/preset-compiler');
+const { syncWorkspaceAgentsMd, buildOnboardingAuditMd } = require('./lib/workspace-agents');
 
 const DEFAULT_VARS = { char: 'Character', user: '旅人' };
 
@@ -132,6 +139,7 @@ function togglePreset({ dir, enable = [], disable = [] } = {}) {
     fs.writeFileSync(ctx.sourcePath, `${JSON.stringify(updatedSourceJson, null, 2)}\n`, 'utf8');
   }
   fs.writeFileSync(ctx.activePath, ensureTrailingNewline(activeMd), 'utf8');
+  syncWorkspaceAgentsMd(ctx.dir, { activePresetMd: activeMd });
 
   return {
     changed,
@@ -145,10 +153,111 @@ function compileWorkspacePreset({ dir } = {}) {
   const ctx = loadPresetContext(dir);
   const activeMd = compilePreset(ctx.sourceJson, ctx.overrides, ctx.vars);
   fs.writeFileSync(ctx.activePath, ensureTrailingNewline(activeMd), 'utf8');
+  syncWorkspaceAgentsMd(ctx.dir, { activePresetMd: activeMd });
   return {
     activePath: ctx.activePath,
     activeMd,
     vars: ctx.vars,
+  };
+}
+
+function extractSkillDirFromWorkspace(targetDir, explicitSkillDir) {
+  if (explicitSkillDir) return path.resolve(explicitSkillDir);
+  const agentsPath = path.join(targetDir, 'AGENTS.md');
+  if (fs.existsSync(agentsPath)) {
+    const content = fs.readFileSync(agentsPath, 'utf8');
+    const match = content.match(/-\s*`([^`\n]+?)[/\\]SKILL\.md`/);
+    if (match) return match[1];
+  }
+  return path.resolve(__dirname, '..');
+}
+
+/**
+ * Load or replace a SillyTavern preset JSON inside an existing campaign directory,
+ * generate `_onboarding_audit.md` for AI semantic verification, and sync `AGENTS.md`.
+ * @param {{ dir?: string, presetPath: string, keepOverrides?: boolean, skillDir?: string }} opts
+ * @returns {object}
+ */
+function loadPreset({ dir, presetPath, keepOverrides = false, skillDir } = {}) {
+  if (!presetPath) {
+    throw new Error('Missing preset path: pass <preset.json> or --preset <path>');
+  }
+
+  const targetDir = path.resolve(dir || process.cwd());
+  const resolvedPresetPath = path.resolve(presetPath);
+  const presetJson = readJsonFile(resolvedPresetPath, 'preset');
+
+  const campaignPath = path.join(targetDir, 'campaign.json');
+  const hasCampaign = fs.existsSync(campaignPath);
+  const campaign = hasCampaign ? readJsonFile(campaignPath, 'campaign.json') : null;
+  const vars = {
+    char: (campaign && campaign.char && String(campaign.char).trim()) || DEFAULT_VARS.char,
+    user: (campaign && campaign.user && String(campaign.user).trim()) || DEFAULT_VARS.user,
+  };
+
+  const prepared = preparePresetOnImport(presetJson, vars);
+  const presetDir = path.join(targetDir, 'preset');
+  const sourcePath = path.join(presetDir, 'source.json');
+  const overridesPath = path.join(presetDir, 'overrides.json');
+  const activePath = path.join(presetDir, 'active.md');
+
+  fs.mkdirSync(presetDir, { recursive: true });
+  fs.writeFileSync(sourcePath, `${JSON.stringify(prepared.sourceJson, null, 2)}\n`, 'utf8');
+
+  let activeMd = prepared.activeMd;
+  if (!keepOverrides) {
+    if (fs.existsSync(overridesPath)) {
+      fs.rmSync(overridesPath, { force: true });
+    }
+  } else if (fs.existsSync(overridesPath)) {
+    const parsedOverrides = readJsonFile(overridesPath, 'preset/overrides.json');
+    if (!parsedOverrides || typeof parsedOverrides !== 'object' || Array.isArray(parsedOverrides)) {
+      throw new Error(`Invalid preset/overrides.json "${overridesPath}": expected a JSON object`);
+    }
+    activeMd = compilePreset(prepared.sourceJson, parsedOverrides, vars);
+  }
+
+  fs.writeFileSync(activePath, ensureTrailingNewline(activeMd), 'utf8');
+
+  const presetSource = path.basename(resolvedPresetPath);
+  const resolvedSkillDir = extractSkillDirFromWorkspace(targetDir, skillDir);
+
+  if (campaign && typeof campaign === 'object' && !Array.isArray(campaign)) {
+    campaign.hasPreset = true;
+    campaign.presetSource = presetSource;
+    campaign.needsOnboardingAudit = true;
+    fs.writeFileSync(campaignPath, `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
+
+    const auditPath = path.join(targetDir, '_onboarding_audit.md');
+    const presetAnomalies = inspectPresetAnomalies(prepared.sourceJson, activeMd, prepared.autoDisabled);
+    fs.writeFileSync(
+      auditPath,
+      buildOnboardingAuditMd({
+        char: vars.char,
+        user: vars.user,
+        skillDir: resolvedSkillDir,
+        hasPreset: true,
+        presetSource,
+        presetAnomalies,
+        presetOnly: true,
+      }),
+      'utf8'
+    );
+  }
+
+  const syncedAgents = syncWorkspaceAgentsMd(targetDir, {
+    activePresetMd: activeMd,
+    skillDir: resolvedSkillDir,
+  });
+
+  return {
+    dir: targetDir,
+    presetSource,
+    sourcePath,
+    activePath,
+    autoDisabled: prepared.autoDisabled,
+    activeMd,
+    syncedAgents,
   };
 }
 
@@ -157,16 +266,21 @@ function getHelpText() {
   node preset.js list [--dir <dir>]
   node preset.js toggle [--enable <query>] [--disable <query>] [--dir <dir>]
   node preset.js compile [--dir <dir>]
+  node preset.js load <presetPath> [--dir <dir>] [--keep-overrides] [--skill-dir <path>]
 
 Commands:
   list      List all preset entries with index, [x]/[ ] status, name, and chars
   toggle    Enable/disable entries by index, identifier, or name substring (repeatable)
-  compile   Recompile preset/active.md from preset/source.json and preset/overrides.json
+  compile   Recompile preset/active.md from preset/source.json and preset/overrides.json, and sync AGENTS.md
+  load      Load or replace preset JSON in an existing campaign, create _onboarding_audit.md, and sync AGENTS.md
 
 Options:
   --enable <query>    Enable matching preset entry (repeatable)
   --disable <query>   Disable matching preset entry (repeatable)
+  --preset <path>     Preset JSON path for 'load' (alternative to positional argument)
+  --keep-overrides    Keep existing preset/overrides.json when running 'load'
   --dir <dir>         Campaign directory (default: current directory)
+  --skill-dir <path>  Skill directory path when syncing AGENTS.md / audit brief
   --help, -h          Show this help message
 `;
 }
@@ -187,7 +301,11 @@ function takeFlagValue(argv, index, inlineVal, flagName) {
 function parsePresetArgs(argv) {
   const parsed = {
     command: null,
+    target: undefined,
     dir: undefined,
+    presetPath: undefined,
+    keepOverrides: false,
+    skillDir: undefined,
     enable: [],
     disable: [],
     help: false,
@@ -199,10 +317,18 @@ function parsePresetArgs(argv) {
       parsed.help = true;
       continue;
     }
+    if (arg === '--keep-overrides') {
+      parsed.keepOverrides = true;
+      continue;
+    }
 
     if (!arg.startsWith('-')) {
       if (!parsed.command) {
         parsed.command = arg;
+        continue;
+      }
+      if (parsed.command === 'load' && !parsed.target) {
+        parsed.target = arg;
         continue;
       }
       throw new Error(`Unexpected positional argument: ${arg}`);
@@ -215,6 +341,14 @@ function parsePresetArgs(argv) {
     if (flag === '--dir') {
       const taken = takeFlagValue(argv, i, inlineVal, flag);
       parsed.dir = taken.value;
+      i = taken.nextIndex;
+    } else if (flag === '--preset') {
+      const taken = takeFlagValue(argv, i, inlineVal, flag);
+      parsed.presetPath = taken.value;
+      i = taken.nextIndex;
+    } else if (flag === '--skill-dir') {
+      const taken = takeFlagValue(argv, i, inlineVal, flag);
+      parsed.skillDir = taken.value;
       i = taken.nextIndex;
     } else if (flag === '--enable') {
       const taken = takeFlagValue(argv, i, inlineVal, flag);
@@ -247,9 +381,9 @@ function main() {
     return;
   }
 
-  if (!args.command || !['list', 'toggle', 'compile'].includes(args.command)) {
+  if (!args.command || !['list', 'toggle', 'compile', 'load'].includes(args.command)) {
     process.stderr.write(
-      `${args.command ? `Unknown command: ${args.command}` : 'Missing command (list | toggle | compile)'}\n\n${getHelpText()}`
+      `${args.command ? `Unknown command: ${args.command}` : 'Missing command (list | toggle | compile | load)'}\n\n${getHelpText()}`
     );
     process.exitCode = 1;
     return;
@@ -278,6 +412,20 @@ function main() {
       return;
     }
 
+    if (args.command === 'load') {
+      const res = loadPreset({
+        dir: args.dir,
+        presetPath: args.presetPath || args.target,
+        keepOverrides: args.keepOverrides,
+        skillDir: args.skillDir,
+      });
+      process.stdout.write(
+        `Loaded preset ${res.presetSource} -> ${res.activePath} (${res.activeMd.length} chars, auto-disabled ${res.autoDisabled.length}, AGENTS.md synced: ${res.syncedAgents ? 'yes' : 'no'}).\n` +
+          (res.autoDisabled.length > 0 ? '  Inspect _onboarding_audit.md to verify no jailbreak entry was auto-disabled, then run init.js --finalize-audit.\n' : '')
+      );
+      return;
+    }
+
     const res = compileWorkspacePreset({ dir: args.dir });
     process.stdout.write(`Compiled ${res.activePath} (${res.activeMd.length} chars).\n`);
   } catch (err) {
@@ -296,4 +444,5 @@ module.exports = {
   listPreset,
   togglePreset,
   compileWorkspacePreset,
+  loadPreset,
 };

@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { loadCard, loadWorldbook, extractCardBundle } = require('./lib/card-loader');
-const { preparePresetOnImport, compilePreset } = require('./lib/preset-compiler');
+const { preparePresetOnImport, compilePreset, inspectPresetAnomalies } = require('./lib/preset-compiler');
+const { buildAgentsMd, syncWorkspaceAgentsMd, buildOnboardingAuditMd } = require('./lib/workspace-agents');
 
 class NonEmptyDirectoryError extends Error {
   /**
@@ -154,50 +155,6 @@ function buildRawStatusCandidatesMd(candidates) {
   return `${lines.join('\n')}`;
 }
 
-function buildAgentsMd({ char, user, hasPreset, hasStatus, hasStatusCandidates, skillDir }) {
-  const skillMdPath = path.join(skillDir, 'SKILL.md');
-  const presetScriptPath = path.join(skillDir, 'scripts', 'preset.js');
-  const hudScriptPath = path.join(skillDir, 'scripts', 'hud.js');
-
-  return `# Tavern-Bard Roleplay Campaign: ${char} × ${user}
-
-This working directory is an active \`tavern-bard\` roleplay campaign (\`${char}\` × \`${user}\`).
-
-## Skill Activation
-
-Before continuing or taking any turn, invoke/read the \`tavern-bard\` skill:
-- \`${skillMdPath}\`
-- Helper CLIs: \`node "${presetScriptPath}"\` | \`node "${hudScriptPath}"\`
-
-## Low-Token Resume Reading List
-
-When starting a new session or recovering from context compression, read ONLY:
-1. \`campaign.json\`
-2. \`card/character.md\`
-3. \`worldbook/always.md\` and \`worldbook/index.md\`
-4. ${hasPreset ? '`preset/active.md`' : '`preset/active.md` (if present)'}
-5. ${
-    hasStatusCandidates && !hasStatus
-      ? '`state.json` and `status/rules.md` (if `hasStatus` is `false`, finish converting `status/_raw_candidates.md` first)'
-      : '`state.json` and `status/rules.md` (if `hasStatus: true`)'
-  }
-6. \`memory/summary/facts.md\`, \`memory/summary/arcs.md\`, and the last 3 entries of \`memory/summary/scenes.md\`
-7. Tail (last 3–5 turns) of the latest \`memory/full/chapter-XX.md\`
-
-**NEVER** read all of \`memory/full/\` or all of \`worldbook/entries/\` upfront — look up entries via \`worldbook/index.md\` and grep/read ranges only on demand.
-
-## Three Iron Rules
-
-1. **Zero OOC (严禁出戏)**: Never break character or speak as an AI assistant unless the player issues an explicit out-of-character command (e.g., toggle preset, check state, summarize).
-2. **Respect User Agency (严禁越界代演)**: Never invent dialogue, inner thoughts, or unstated actions on behalf of \`${user}\`.
-3. **Clean Prose (严禁正文污染)**: Output clean literary prose (plus clean Markdown end-of-turn add-ons explicitly required by the active preset). Never emit status codeblocks, \`state.json\` JSON, \`<thinking>\`/\`<think_nya>\` chains, or raw XML wrapper tags (\`<game>\`, \`<options>\`, \`<comment>\`, \`<summary>\`).
-
-## Turn Settlement
-
-After each turn: append the turn to the current \`memory/full/chapter-XX.md\`, update \`state.json\` when \`hasStatus: true\`, and append \`memory/summary/scenes.md\` (plus \`facts.md\` / \`arcs.md\` & next chapter) on scene transitions or every 20 turns.
-`;
-}
-
 function writeInitialMemoryFiles(targetDir) {
   const summaryDir = path.join(targetDir, 'memory', 'summary');
   const fullDir = path.join(targetDir, 'memory', 'full');
@@ -242,6 +199,7 @@ function buildCampaignMeta({
   hasStatusCandidates,
   resolvedCardPath,
   resolvedPresetPath,
+  needsOnboardingAudit,
 }) {
   const hasStateJson = fs.existsSync(path.join(targetDir, 'state.json'));
   const hasPresetSource = fs.existsSync(path.join(targetDir, 'preset', 'source.json'));
@@ -275,6 +233,7 @@ function buildCampaignMeta({
     hasStatus,
     hasStatusCandidates,
     hasPreset,
+    needsOnboardingAudit: Boolean(needsOnboardingAudit),
     currentChapter,
     currentTurn,
     createdAt,
@@ -386,6 +345,9 @@ function initWorkspace(opts) {
 
   // Build campaign metadata (preserving live progress on refresh)
   const hasStatusCandidates = bundle.statusCandidates.length > 0;
+  const needsOnboardingAudit = !existingCampaign || Boolean(opts.presetPath)
+    ? true
+    : Boolean(existingCampaign.needsOnboardingAudit);
   const campaign = buildCampaignMeta({
     targetDir,
     existingCampaign,
@@ -394,6 +356,7 @@ function initWorkspace(opts) {
     hasStatusCandidates,
     resolvedCardPath,
     resolvedPresetPath,
+    needsOnboardingAudit,
   });
 
   // Write status/_raw_candidates.md ONLY when status candidates exist and state.json is not already active
@@ -407,7 +370,15 @@ function initWorkspace(opts) {
     );
   }
 
-  // Write campaign.json, AGENTS.md, CLAUDE.md
+  let activePresetMd = presetResult ? presetResult.activeMd : '';
+  if (!activePresetMd && campaign.hasPreset) {
+    const existingActivePath = path.join(targetDir, 'preset', 'active.md');
+    if (fs.existsSync(existingActivePath)) {
+      activePresetMd = fs.readFileSync(existingActivePath, 'utf8');
+    }
+  }
+
+  // Write campaign.json, AGENTS.md, CLAUDE.md, GEMINI.md, and optional _onboarding_audit.md
   fs.writeFileSync(path.join(targetDir, 'campaign.json'), `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
   fs.writeFileSync(
     path.join(targetDir, 'AGENTS.md'),
@@ -417,11 +388,45 @@ function initWorkspace(opts) {
       hasPreset: campaign.hasPreset,
       hasStatus: campaign.hasStatus,
       hasStatusCandidates,
+      needsOnboardingAudit: campaign.needsOnboardingAudit,
       skillDir,
+      activePresetMd,
     }),
     'utf8'
   );
   fs.writeFileSync(path.join(targetDir, 'CLAUDE.md'), '@AGENTS.md\n', 'utf8');
+  fs.writeFileSync(path.join(targetDir, 'GEMINI.md'), '@AGENTS.md\n', 'utf8');
+
+  const auditPath = path.join(targetDir, '_onboarding_audit.md');
+  if (campaign.needsOnboardingAudit) {
+    let presetAnomalies = null;
+    if (presetResult) {
+      presetAnomalies = inspectPresetAnomalies(
+        presetResult.sourceJson,
+        presetResult.activeMd,
+        presetResult.autoDisabled
+      );
+    } else if (campaign.hasPreset && fs.existsSync(path.join(targetDir, 'preset', 'source.json'))) {
+      const existingSource = readJsonFile(path.join(targetDir, 'preset', 'source.json'), 'preset/source.json');
+      presetAnomalies = inspectPresetAnomalies(existingSource, activePresetMd, []);
+    }
+
+    fs.writeFileSync(
+      auditPath,
+      buildOnboardingAuditMd({
+        char: campaign.char,
+        user: campaign.user,
+        skillDir,
+        cardBundle: bundle,
+        hasPreset: campaign.hasPreset,
+        presetSource: campaign.presetSource,
+        presetAnomalies,
+        hasStatusCandidates,
+        hasStatus: campaign.hasStatus,
+      }),
+      'utf8'
+    );
+  }
 
   return {
     dir: targetDir,
@@ -438,17 +443,96 @@ function initWorkspace(opts) {
   };
 }
 
+/**
+ * Complete AI onboarding fallback audit: recompile `preset/active.md` (with `overrides.json`),
+ * promote `hasStatus: true` if `state.json` exists, clear `_onboarding_audit.md`,
+ * and sync `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`.
+ * @param {{ dir?: string, skillDir?: string }} [opts={}]
+ * @returns {{ dir: string, campaign: object, syncedAgentsMd: boolean, recompiledPreset: boolean }}
+ */
+function finalizeOnboardingAudit(opts = {}) {
+  const targetDir = path.resolve((opts && opts.dir) || process.cwd());
+  const campaignPath = path.join(targetDir, 'campaign.json');
+  if (!fs.existsSync(campaignPath)) {
+    throw new Error(`campaign.json not found in "${targetDir}". Initialize a campaign first.`);
+  }
+
+  const campaign = readJsonFile(campaignPath, 'campaign.json');
+  if (!campaign || typeof campaign !== 'object' || Array.isArray(campaign)) {
+    throw new Error(`Invalid campaign.json in "${targetDir}"`);
+  }
+
+  const statePath = path.join(targetDir, 'state.json');
+  const rawCandidatesPath = path.join(targetDir, 'status', '_raw_candidates.md');
+  if (fs.existsSync(statePath)) {
+    campaign.hasStatus = true;
+    if (fs.existsSync(rawCandidatesPath)) {
+      fs.rmSync(rawCandidatesPath, { force: true });
+    }
+  }
+
+  const sourcePath = path.join(targetDir, 'preset', 'source.json');
+  const overridesPath = path.join(targetDir, 'preset', 'overrides.json');
+  const activePath = path.join(targetDir, 'preset', 'active.md');
+  let recompiledPreset = false;
+  let activePresetMd = '';
+
+  if (fs.existsSync(sourcePath)) {
+    const sourceJson = readJsonFile(sourcePath, 'preset/source.json');
+    let overrides = {};
+    if (fs.existsSync(overridesPath)) {
+      const parsedOverrides = readJsonFile(overridesPath, 'preset/overrides.json');
+      if (!parsedOverrides || typeof parsedOverrides !== 'object' || Array.isArray(parsedOverrides)) {
+        throw new Error(`Invalid preset/overrides.json "${overridesPath}": expected a JSON object`);
+      }
+      overrides = parsedOverrides;
+    }
+
+    const vars = {
+      char: (campaign.char && String(campaign.char).trim()) || 'Character',
+      user: (campaign.user && String(campaign.user).trim()) || '旅人',
+    };
+    activePresetMd = compilePreset(sourceJson, overrides, vars);
+    fs.writeFileSync(activePath, ensureTrailingNewline(activePresetMd), 'utf8');
+    campaign.hasPreset = true;
+    recompiledPreset = true;
+  }
+
+  campaign.needsOnboardingAudit = false;
+  fs.writeFileSync(campaignPath, `${JSON.stringify(campaign, null, 2)}\n`, 'utf8');
+
+  const auditPath = path.join(targetDir, '_onboarding_audit.md');
+  if (fs.existsSync(auditPath)) {
+    fs.rmSync(auditPath, { force: true });
+  }
+
+  const skillDir = opts && opts.skillDir ? path.resolve(opts.skillDir) : undefined;
+  const syncedAgentsMd = syncWorkspaceAgentsMd(targetDir, {
+    activePresetMd: recompiledPreset ? activePresetMd : undefined,
+    skillDir,
+  });
+
+  return {
+    dir: targetDir,
+    campaign,
+    syncedAgentsMd,
+    recompiledPreset,
+  };
+}
+
 function getHelpText() {
   return `Usage:
   node init.js --card <path> [--preset <path>] [--worldbook <path> ...] [--user <name>] [--dir <targetDir>] [--force] [--skill-dir <path>]
+  node init.js --finalize-audit [--dir <targetDir>] [--skill-dir <path>]
 
 Options:
-  --card <path>       Path to character card (.png or .json) [required]
+  --card <path>       Path to character card (.png or .json) [required unless --finalize-audit]
   --preset <path>     Optional path to SillyTavern preset (.json)
   --worldbook <path>  Optional standalone worldbook (.json); repeatable
   --user <name>       Player name for {{user}} substitution (default: 旅人)
   --dir <targetDir>   Campaign workspace directory (default: current directory)
   --force             Allow initialization in a non-empty directory without campaign.json
+  --finalize-audit    Complete AI onboarding audit, recompile preset/active.md, sync AGENTS.md & clear _onboarding_audit.md
   --skill-dir <path>  Skill installation directory referenced in AGENTS.md
   --help, -h          Show this help message
 `;
@@ -471,6 +555,7 @@ function parseInitArgs(argv) {
   const opts = {
     worldbookPaths: [],
     force: false,
+    finalizeAudit: false,
     help: false,
   };
 
@@ -482,6 +567,10 @@ function parseInitArgs(argv) {
     }
     if (arg === '--force') {
       opts.force = true;
+      continue;
+    }
+    if (arg === '--finalize-audit') {
+      opts.finalizeAudit = true;
       continue;
     }
 
@@ -545,6 +634,22 @@ function main() {
     return;
   }
 
+  if (opts.finalizeAudit) {
+    try {
+      const fin = finalizeOnboardingAudit({ dir: opts.dir, skillDir: opts.skillDir });
+      process.stdout.write(
+        `Finalized onboarding audit in: ${fin.dir}\n` +
+          `  Preset: ${fin.recompiledPreset ? 'recompiled preset/active.md' : 'none'} | ` +
+          `Status: ${fin.campaign.hasStatus ? 'active' : 'none'} | ` +
+          `AGENTS.md synced: ${fin.syncedAgentsMd ? 'yes' : 'no'}\n`
+      );
+    } catch (err) {
+      process.stderr.write(`Error: ${err.message}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   if (!opts.cardPath) {
     process.stderr.write(`Error: --card <path> is required.\n\n${getHelpText()}`);
     process.exitCode = 1;
@@ -561,6 +666,9 @@ function main() {
       `  Preset: ${campaign.hasPreset ? `loaded (auto-disabled ${autoDisabledPresetEntries.length})` : 'none'}`,
       `  Status candidates: ${statusCandidateCount}${statusCandidateCount > 0 ? ' -> inspect status/_raw_candidates.md' : ' (no status/ created)'}`,
     ];
+    if (campaign.needsOnboardingAudit) {
+      summaryLines.push('  Onboarding audit: _onboarding_audit.md generated -> AI must review & run --finalize-audit');
+    }
     if (autoDisabledPresetEntries.length > 0) {
       summaryLines.push('  Auto-disabled preset entries:');
       for (const item of autoDisabledPresetEntries) {
@@ -586,4 +694,5 @@ if (require.main === module) {
 module.exports = {
   NonEmptyDirectoryError,
   initWorkspace,
+  finalizeOnboardingAudit,
 };

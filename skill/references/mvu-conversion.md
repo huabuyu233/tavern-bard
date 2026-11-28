@@ -75,9 +75,8 @@ Before activating the status bar, remove every instruction telling the model to 
    node "<skill_dir>/scripts/preset.js" compile
    ```
    (Using `preset/overrides.json` + `compile` ensures future `preset.js toggle` calls preserve your cleanup.)
-3. Delete `status/_raw_candidates.md`.
-4. Update `campaign.json`: set `"hasStatus": true`.
-5. Optionally validate JSON formatting and layout in one shot:
+3. Update `campaign.json` (`"hasStatus": true`) and delete `status/_raw_candidates.md` (or run `node "<skill_dir>/scripts/init.js" --finalize-audit` alongside your onboarding audit to update `campaign.json`, clean temporary files, and sync `AGENTS.md`).
+4. Optionally validate JSON formatting and layout in one shot:
    ```bash
    node "<skill_dir>/scripts/hud.js" --once --no-color
    ```

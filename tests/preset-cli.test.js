@@ -67,12 +67,18 @@ test('preset.js list outputs [x]/[ ] table and toggle updates source.json & acti
     const catOrder = orderGroup.order.find((o) => o.identifier === catPrompt.identifier);
     assert.equal(catOrder.enabled, false);
 
-    // active.md removes 猫猫留言 and applies overrides.json with campaign.json { char, user }
+    // active.md AND AGENTS.md remove 猫猫留言 and apply overrides.json with campaign.json { char, user }
     const activeMd = fs.readFileSync(path.join(dir, 'preset', 'active.md'), 'utf8');
     assert.ok(!activeMd.includes('猫猫留言'), 'disabled 猫猫留言 must be removed from active.md');
     assert.ok(
       activeMd.includes('自定义语义覆写：角煮风格平然色情-1115 与 林渊 在终端剧场相遇。'),
       'overrides.json must remain applied with campaign vars after toggle'
+    );
+    const agentsAfterToggle = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+    assert.ok(!agentsAfterToggle.includes('猫猫留言'), 'AGENTS.md synced preset must drop disabled entry');
+    assert.ok(
+      agentsAfterToggle.includes('自定义语义覆写：角煮风格平然色情-1115 与 林渊 在终端剧场相遇。'),
+      'AGENTS.md synced preset must reflect active.md updates'
     );
 
     // overrides.json preserved untouched
@@ -187,5 +193,54 @@ test('preset.js toggle does not rewrite preset/source.json when changed.length =
     assert.equal(afterRaw, compactRaw, 'no-op toggle must not rewrite preset/source.json bytes');
     assert.equal(afterMtimeMs, beforeMtimeMs, 'no-op toggle must not modify preset/source.json mtime');
     assert.ok(fs.readFileSync(path.join(presetDir, 'active.md'), 'utf8').includes('已启用的规则A。'));
+  });
+});
+
+test('preset.js load imports a preset into a preset-less campaign, creates _onboarding_audit.md, and syncs AGENTS.md', () => {
+  withTempDir((dir) => {
+    const cardPath = path.join(dir, 'card.json');
+    const campaignDir = path.join(dir, 'campaign');
+    fs.writeFileSync(
+      cardPath,
+      JSON.stringify({ spec: 'chara_card_v2', data: { name: '沈清秋', first_mes: '早安，{{user}}。' } }),
+      'utf8'
+    );
+
+    const initRes = spawnSync(
+      process.execPath,
+      [INIT_SCRIPT, '--card', cardPath, '--user', '陈默', '--dir', campaignDir],
+      { cwd: REPO_ROOT, encoding: 'utf8' }
+    );
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    const preLoadCampaign = JSON.parse(fs.readFileSync(path.join(campaignDir, 'campaign.json'), 'utf8'));
+    assert.equal(preLoadCampaign.hasPreset, false);
+    assert.equal(fs.existsSync(path.join(campaignDir, 'preset')), false);
+
+    // Load Meowssiah preset mid-campaign
+    const loadRes = runPresetCli(['load', FIXTURE_PRESET, '--dir', campaignDir]);
+    assert.equal(loadRes.status, 0, loadRes.stderr);
+    assert.match(loadRes.stdout, /Loaded preset Meowssiah-2\.1\.6\.json/);
+
+    const postLoadCampaign = JSON.parse(fs.readFileSync(path.join(campaignDir, 'campaign.json'), 'utf8'));
+    assert.equal(postLoadCampaign.hasPreset, true);
+    assert.equal(postLoadCampaign.presetSource, 'Meowssiah-2.1.6.json');
+    assert.equal(postLoadCampaign.needsOnboardingAudit, true);
+    assert.equal(fs.existsSync(path.join(campaignDir, '_onboarding_audit.md')), true);
+    assert.ok(fs.readFileSync(path.join(campaignDir, 'preset', 'active.md'), 'utf8').includes('小猫之神'));
+
+    const agentsMd = fs.readFileSync(path.join(campaignDir, 'AGENTS.md'), 'utf8');
+    assert.ok(agentsMd.includes('<!-- TAVERN-BARD:PRESET:START -->'));
+    assert.ok(agentsMd.includes('小猫之神'));
+
+    // Finalize audit cleans up _onboarding_audit.md while keeping preset in AGENTS.md
+    const finRes = spawnSync(process.execPath, [INIT_SCRIPT, '--finalize-audit', '--dir', campaignDir], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    });
+    assert.equal(finRes.status, 0, finRes.stderr);
+    assert.equal(fs.existsSync(path.join(campaignDir, '_onboarding_audit.md')), false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(campaignDir, 'campaign.json'), 'utf8')).needsOnboardingAudit, false);
+    assert.ok(fs.readFileSync(path.join(campaignDir, 'AGENTS.md'), 'utf8').includes('小猫之神'));
   });
 });
