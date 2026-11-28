@@ -5,13 +5,14 @@ const { setupPureEnvironment } = require('./lib/pure-env');
 
 function getHelpText() {
   return `Usage:
-  node env-setup.js [--dir <dir>] [--agent <name>] [--launch-arg <arg> ...] [--launch-env <KEY=VAL> ...] [--skill-dir <path>] [--json]
+  node env-setup.js [--dir <dir>] [--agent <name>] [--launch-arg <arg> ...] [--launch-env <KEY=VAL> ...] [--sync-file <path> ...] [--skill-dir <path>] [--json]
 
 Options:
   --dir <dir>              Campaign workspace directory (default: current directory)
   --agent <name>           Explicit host agent override (auto, agy, codex, claude, opencode, gemini, <custom-cli>, desktop)
   --launch-arg <arg>       Repeatable launch argument template for a custom CLI (supports {systemPrompt}, {systemPromptAbs}, {prompt})
   --launch-env <KEY=VAL>   Repeatable env var template for a custom CLI (supports {systemPrompt}, {systemPromptAbs}, {prompt})
+  --sync-file <path>       Repeatable workspace config/prompt file to keep synced with pure system prompt (preserves YAML frontmatter if present)
   --skill-dir <path>       Skill installation directory referenced in system-prompt.md
   --json                   Output machine-readable JSON result
   --help, -h               Show this help message
@@ -43,6 +44,7 @@ function parseEnvSetupArgs(argv) {
     skillDir: undefined,
     launchArgs: [],
     launchEnv: {},
+    syncFiles: [],
     json: false,
     help: false,
   };
@@ -91,6 +93,10 @@ function parseEnvSetupArgs(argv) {
       }
       opts.launchEnv[envKey] = envVal;
       i = taken.nextIndex;
+    } else if (flag === '--sync-file') {
+      const taken = takeFlagValue(argv, i, inlineVal, flag);
+      opts.syncFiles.push(taken.value);
+      i = taken.nextIndex;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -104,9 +110,12 @@ function formatTextReport(result) {
   const lines = [
     `Prepared pure narrator system-prompt in: ${result.dir}`,
     `  System prompt: ${result.systemPromptPath}`,
-    `  Host agent: ${result.hostAgent} (${result.supportedPureHost ? 'pure system-prompt supported' : 'no built-in pure launcher matched'})`,
+    `  Host agent: ${result.hostAgent} (${result.supportedPureHost ? 'pure system-prompt supported' : 'not in built-in presets'})`,
     `  Configured CLIs: ${configured}`,
   ];
+  if (result.pureLauncher && Array.isArray(result.pureLauncher.syncFiles) && result.pureLauncher.syncFiles.length > 0) {
+    lines.push(`  Synced custom files: ${result.pureLauncher.syncFiles.join(', ')}`);
+  }
 
   if (result.supportedPureHost) {
     lines.push('');
@@ -117,18 +126,16 @@ function formatTextReport(result) {
     }
   } else {
     lines.push('');
-    lines.push(`说明：未能自动匹配宿主（${result.hostAgent}）的内置纯净启动器。`);
-    lines.push('若当前或本机其他 CLI Agent 支持官方系统提示词文件/自定义代理参数（指向 .tavern-bard/system-prompt.md），可直接按其官方文档使用，或运行以下命令将其注册到 npx tavern-bard play：');
-    lines.push('  node env-setup.js --agent <cli> --launch-arg <flag> --launch-arg "{systemPrompt}" --launch-arg "{prompt}"');
+    lines.push(`说明：${result.hostAgent} 不在内置预设名单（agy / codex / claude / opencode / gemini）中，已生成 .tavern-bard/system-prompt.md。`);
+    lines.push('请联网搜索该 Agent 的官方文档（若本机已安装也可用 <cli> --help 核对），按官方文档写入其自定义主 Agent / 系统提示词配置并保留文件读写命令权限，再用以下命令注册启动入口：');
+    lines.push('  node env-setup.js --agent <cli> [--launch-arg <arg> ...] [--launch-env <KEY=VAL> ...] [--sync-file <relative-path> ...]');
     if (result.installedClis.length > 0) {
-      lines.push('检测到本机已安装以下内置支持纯净模式的 CLI，可在对应终端中运行：');
+      lines.push('检测到本机也安装有以下内置支持纯净模式的 CLI，可按需改用：');
       for (const cli of result.installedClis) {
         lines.push(`  - npx tavern-bard play --cli ${cli}`);
       }
-    } else {
-      lines.push('未在本机 PATH 中检测到 agy / codex / claude / opencode / gemini CLI。');
     }
-    lines.push('若当前宿主确实无 CLI 或无官方系统提示词替换入口（仅桌面端可用），也可直接回复："直接在这里开始" 以标准 AGENTS.md 兼容模式游玩。');
+    lines.push('若官方文档确认不支持 CLI 或系统提示词替换，也可直接回复："直接在这里开始" 以标准 AGENTS.md 兼容模式游玩。');
   }
 
   return `${lines.join('\n')}\n`;
@@ -156,6 +163,7 @@ function main() {
       skillDir: opts.skillDir,
       launchArgs: opts.launchArgs,
       launchEnv: opts.launchEnv,
+      syncFiles: opts.syncFiles,
     });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

@@ -424,6 +424,36 @@ function formatNativeLaunchCommand(
   }
 }
 
+function resolveSafeSyncFile(targetDir, rawPath) {
+  if (!rawPath || typeof rawPath !== 'string' || !rawPath.trim()) {
+    throw new Error('--sync-file requires a non-empty workspace-relative path.');
+  }
+  const resolvedRoot = path.resolve(targetDir);
+  const fullPath = path.resolve(resolvedRoot, rawPath.trim());
+  const rel = path.relative(resolvedRoot, fullPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`--sync-file "${rawPath}" must resolve inside the campaign directory.`);
+  }
+  return {
+    fullPath,
+    relPosix: rel.split(path.sep).join('/'),
+  };
+}
+
+function syncCustomPromptFile(fullPath, purePromptMd) {
+  const body = String(purePromptMd || '').trimEnd();
+  if (fs.existsSync(fullPath)) {
+    const raw = stripBom(fs.readFileSync(fullPath, 'utf8'));
+    const fmMatch = raw.match(/^(---\r?\n[\s\S]*?\r?\n---)(?:\r?\n|$)/);
+    if (fmMatch) {
+      fs.writeFileSync(fullPath, `${fmMatch[1]}\n\n${body}\n`, 'utf8');
+      return;
+    }
+  }
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, `${body}\n`, 'utf8');
+}
+
 /**
  * Generate `.tavern-bard/system-prompt.md`, configure official CLI overrides,
  * update `campaign.json`, and sync `AGENTS.md`.
@@ -439,6 +469,7 @@ function setupPureEnvironment({
   platform = process.platform,
   launchArgs,
   launchEnv,
+  syncFiles,
 } = {}) {
   const targetDir = path.resolve(dir || process.cwd());
   const campaignPath = path.join(targetDir, 'campaign.json');
@@ -449,6 +480,18 @@ function setupPureEnvironment({
   const campaign = readJsonFile(campaignPath, 'campaign.json');
   if (!campaign || typeof campaign !== 'object' || Array.isArray(campaign)) {
     throw new Error(`Invalid campaign.json in "${targetDir}"`);
+  }
+
+  const normalizedSyncFiles = [];
+  if (Array.isArray(syncFiles) && syncFiles.length > 0) {
+    const seen = new Set();
+    for (const rawFile of syncFiles) {
+      const { relPosix } = resolveSafeSyncFile(targetDir, rawFile);
+      if (!seen.has(relPosix)) {
+        seen.add(relPosix);
+        normalizedSyncFiles.push(relPosix);
+      }
+    }
   }
 
   const resolvedSkillDir = extractSkillDirFromWorkspace(targetDir, skillDir);
@@ -468,19 +511,51 @@ function setupPureEnvironment({
     platform,
   });
 
-  const hasCustomSpec =
-    (Array.isArray(launchArgs) && launchArgs.length > 0) ||
-    (launchEnv && typeof launchEnv === 'object' && Object.keys(launchEnv).length > 0);
+  const hasLaunchArgs = Array.isArray(launchArgs) && launchArgs.length > 0;
+  const hasLaunchEnv = Boolean(
+    launchEnv && typeof launchEnv === 'object' && Object.keys(launchEnv).length > 0
+  );
+  const hasSyncFiles = normalizedSyncFiles.length > 0;
+  const hasCustomSpec = hasLaunchArgs || hasLaunchEnv || hasSyncFiles;
+
   if (hasCustomSpec) {
     if (!isValidCustomCliName(envInfo.hostAgent)) {
-      throw new Error('Custom --launch-arg/--launch-env requires a concrete CLI name via --agent <cli>.');
+      throw new Error(
+        'Custom --launch-arg/--launch-env/--sync-file requires a concrete CLI name via --agent <cli>.'
+      );
     }
+    const existingSameCli =
+      campaign.pureLauncher &&
+      campaign.pureLauncher.cli &&
+      normalizeAgentName(campaign.pureLauncher.cli) === envInfo.hostAgent
+        ? campaign.pureLauncher
+        : null;
+
     const customLauncher = {
       cli: envInfo.hostAgent,
-      args: Array.isArray(launchArgs) ? [...launchArgs] : [],
+      args: hasLaunchArgs
+        ? [...launchArgs]
+        : existingSameCli && Array.isArray(existingSameCli.args)
+          ? [...existingSameCli.args]
+          : [],
     };
-    if (launchEnv && typeof launchEnv === 'object' && Object.keys(launchEnv).length > 0) {
-      customLauncher.env = { ...launchEnv };
+    const mergedEnv = {
+      ...(existingSameCli && existingSameCli.env ? existingSameCli.env : {}),
+      ...(hasLaunchEnv ? launchEnv : {}),
+    };
+    if (Object.keys(mergedEnv).length > 0) {
+      customLauncher.env = mergedEnv;
+    }
+    const mergedSyncFiles = [
+      ...new Set([
+        ...(existingSameCli && Array.isArray(existingSameCli.syncFiles)
+          ? existingSameCli.syncFiles
+          : []),
+        ...normalizedSyncFiles,
+      ]),
+    ];
+    if (mergedSyncFiles.length > 0) {
+      customLauncher.syncFiles = mergedSyncFiles;
     }
     campaign.pureLauncher = customLauncher;
   }
@@ -499,12 +574,7 @@ function setupPureEnvironment({
   fs.mkdirSync(systemPromptDir, { recursive: true });
   fs.writeFileSync(systemPromptPath, purePromptMd, 'utf8');
 
-  const configureClis = [
-    ...new Set([
-      ...envInfo.installedClis,
-      ...(envInfo.supportedPureHost ? [envInfo.hostAgent] : []),
-    ]),
-  ];
+  const configureClis = envInfo.supportedPureHost ? [envInfo.hostAgent] : [];
 
   if (configureClis.includes('opencode')) {
     const opencodeAgentsDir = path.join(targetDir, '.opencode', 'agents');
@@ -555,6 +625,14 @@ function setupPureEnvironment({
     normalizeAgentName(campaign.pureLauncher.cli) === envInfo.hostAgent
       ? campaign.pureLauncher
       : null;
+
+  if (activeCustomLauncher && Array.isArray(activeCustomLauncher.syncFiles)) {
+    for (const relFile of activeCustomLauncher.syncFiles) {
+      const { fullPath } = resolveSafeSyncFile(targetDir, relFile);
+      syncCustomPromptFile(fullPath, purePromptMd);
+    }
+  }
+
   const effectiveSupportedPureHost = envInfo.supportedPureHost || Boolean(activeCustomLauncher);
 
   const normalizedExistingPref = campaign.preferredCli ? normalizeAgentName(campaign.preferredCli) : null;
@@ -665,6 +743,19 @@ function syncPureEnvironmentFiles(targetDir, { activePresetMd, skillDir } = {}) 
   const agyAgentPath = path.join(resolvedDir, '.agents', 'agents', 'tavern-bard', 'agent.md');
   if (fs.existsSync(agyAgentPath)) {
     fs.writeFileSync(agyAgentPath, buildAgyAgentMd(purePromptMd), 'utf8');
+  }
+
+  if (campaign && campaign.pureLauncher && Array.isArray(campaign.pureLauncher.syncFiles)) {
+    for (const relFile of campaign.pureLauncher.syncFiles) {
+      try {
+        const { fullPath } = resolveSafeSyncFile(resolvedDir, relFile);
+        if (fs.existsSync(fullPath)) {
+          syncCustomPromptFile(fullPath, purePromptMd);
+        }
+      } catch {
+        // Ignore invalid syncFiles entries during preset sync
+      }
+    }
   }
 
   return true;

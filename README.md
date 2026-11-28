@@ -25,8 +25,12 @@
 
 ## 运行模式说明
 
-- **纯净系统提示词模式（内置支持 Antigravity agy / Codex / Claude Code / OpenCode / Gemini CLI，且支持通过 env-setup 接入任意带官方系统提示词替换参数的 CLI）**：初始化后通过官方接口将顶层编程助手系统提示词替换为纯净酒馆叙事引擎，保留全部文件读写工具（双层记忆、按需世界书、hud.js 状态栏），次日回到对局目录运行 npx tavern-bard play 即可直接续玩；
-- **标准兼容模式（Cursor / Windsurf 等暂未开放官方系统提示词替换接口的桌面端或群聊 Bot）**：通过工作区指令文件兼容运行。
+初始化完成后，Agent 会先询问你接下来的游玩方式（不擅自生成多余配置）：
+
+- **直接开始角色扮演（标准兼容模式）**：无需重启会话，通过工作区指令文件在当前窗口立即开演，保持零多余文件；
+- **纯净系统提示词环境（由你指定所用 Agent）**：通过官方接口将顶层编程助手系统提示词替换为纯净酒馆叙事引擎，同时保留文件读写与命令工具（双层记忆、按需世界书、hud.js 状态栏），次日回到对局目录运行 npx tavern-bard play 即可直接续玩：
+  - **内置秒配（5 家主流 CLI）**：Antigravity agy、Codex CLI、Claude Code、OpenCode、Gemini CLI，仅生成你所选那一个 Agent 的官方配置；
+  - **任意其他 Agent（官方联网适配）**：若你指定了内置名单之外的 Agent，AI 会联网查阅该 Agent 的官方文档（并结合帮助命令）核实系统提示词替换规范与读写工具权限，按官方要求写入配置并注册到启动器；若宿主确实不支持系统提示词替换则如实说明。
 
 ---
 
@@ -73,12 +77,13 @@ npx tavern-bard uninstall                                                       
    ```
 2. **对 Agent 说**：
    > 开始角色扮演，用 `D:/cards/xxx.png`，预设用 `D:/presets/xxx.json`，我叫陈默
-3. **（仅当卡片有状态栏时）打开第二个终端或分屏**，在同一个对局目录下运行实时 HUD 看板：
+3. **选择游玩模式**：初始化完成后，按提示回复直接开始角色扮演，或回复要启用纯净系统提示词的 Agent 名称（例如 agy / Claude Code / Codex / OpenCode / Gemini CLI 或其他任意 Agent）。
+4. **（仅当卡片有状态栏时）打开第二个终端或分屏**，在同一个对局目录下运行实时 HUD 看板：
    ```bash
    node ~/.agents/skills/tavern-bard/scripts/hud.js
    ```
    *(Windows PowerShell 下将 `~` 替换为 `$env:USERPROFILE`)*
-4. **游玩中常用自然语言指令**：
+5. **游玩中常用自然语言指令**：
    - `看看预设开了什么` / `把猫猫留言关掉`
    - `重写上一轮`
 
@@ -94,7 +99,7 @@ tavern-bard/
 │   ├── SKILL.md                # Agent 行为规范、SOP 与防出戏铁律
 │   ├── references/             # 状态栏转 MVU 指南 & 双层记忆协议
 │   └── scripts/                # init.js / preset.js / env-setup.js / hud.js 及 lib/（含 pure-env.js）解析库
-└── tests/                      # 63 项 node:test 自动化测试与 Skill TDD 压力测试记录
+└── tests/                      # 64 项 node:test 自动化测试与 Skill TDD 压力测试记录
 ```
 
 ## 本地测试

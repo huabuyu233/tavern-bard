@@ -337,7 +337,7 @@ test('setupPureEnvironment writes pure prompt, official CLI configs without over
     );
     assert.equal(initRes.status, 0, initRes.stderr);
 
-    // Pre-create custom opencode.json and .gemini/.env to verify non-overwrite / upsert behavior
+    // Pre-create custom opencode.json and .gemini/.env to verify non-overwrite / upsert behavior when selected
     const customOpencodeJson = JSON.stringify({ model: 'custom/model', theme: 'dark' }, null, 2) + '\n';
     fs.writeFileSync(path.join(campaignDir, 'opencode.json'), customOpencodeJson, 'utf8');
     fs.mkdirSync(path.join(campaignDir, '.gemini'), { recursive: true });
@@ -347,6 +347,7 @@ test('setupPureEnvironment writes pure prompt, official CLI configs without over
       'utf8'
     );
 
+    // 1. Selecting claude configures ONLY claude (does NOT generate .opencode or modify .gemini)
     const installedSet = new Set(['opencode', 'claude', 'gemini']);
     const result = setupPureEnvironment({
       dir: campaignDir,
@@ -365,30 +366,24 @@ test('setupPureEnvironment writes pure prompt, official CLI configs without over
       result.nativeLaunchCommand,
       'claude --system-prompt-file ".tavern-bard/system-prompt.md" "开始游戏"'
     );
-    assert.deepEqual(result.configuredClis.sort(), ['claude', 'gemini', 'opencode']);
+    assert.deepEqual(result.configuredClis, ['claude']);
+    assert.equal(fs.existsSync(path.join(campaignDir, '.opencode', 'agents', 'tavern-bard.md')), false);
 
     // .tavern-bard/system-prompt.md created with PURE_ENV_MARKER & preset
     const sysPrompt = fs.readFileSync(result.systemPromptPath, 'utf8');
     assert.ok(sysPrompt.includes(PURE_ENV_MARKER));
     assert.ok(sysPrompt.includes('小猫之神'));
 
-    // .opencode/agents/tavern-bard.md written; custom opencode.json preserved!
-    const opencodeAgent = fs.readFileSync(path.join(campaignDir, '.opencode', 'agents', 'tavern-bard.md'), 'utf8');
-    assert.match(opencodeAgent, /^---\ndescription: .+\nmode: primary\n---\n/);
-    assert.ok(opencodeAgent.includes(PURE_ENV_MARKER));
-    assert.equal(fs.readFileSync(path.join(campaignDir, 'opencode.json'), 'utf8'), customOpencodeJson);
-
     // .claude/agents/tavern-bard.md written
     const claudeAgent = fs.readFileSync(path.join(campaignDir, '.claude', 'agents', 'tavern-bard.md'), 'utf8');
     assert.match(claudeAgent, /^---\nname: tavern-bard\ndescription: .+\n---\n/);
     assert.ok(claudeAgent.includes(PURE_ENV_MARKER));
 
-    // .gemini/.env upserted cleanly without clobbering other vars
-    const geminiEnv = fs.readFileSync(path.join(campaignDir, '.gemini', '.env'), 'utf8');
-    assert.match(geminiEnv, /^GEMINI_MODEL=gemini-2\.5-pro$/m);
-    assert.match(geminiEnv, /^OTHER_VAR=1$/m);
-    assert.match(geminiEnv, /^GEMINI_SYSTEM_MD=\.tavern-bard\/system-prompt\.md$/m);
-    assert.equal(geminiEnv.match(/GEMINI_SYSTEM_MD=/g).length, 1);
+    // .gemini/.env was NOT touched when selecting claude
+    assert.match(
+      fs.readFileSync(path.join(campaignDir, '.gemini', '.env'), 'utf8'),
+      /^GEMINI_SYSTEM_MD=old\/path\.md$/m
+    );
 
     // campaign.json & AGENTS.md updated
     const updatedCampaign = JSON.parse(fs.readFileSync(path.join(campaignDir, 'campaign.json'), 'utf8'));
@@ -399,25 +394,60 @@ test('setupPureEnvironment writes pure prompt, official CLI configs without over
     assert.match(agentsMd, /## Pure Environment Resume Tip/);
     assert.match(agentsMd, /preferred CLI: `claude`/);
 
-    // Fresh dir without opencode.json creates default opencode.json; ## Opening triggers isResume: true
-    fs.rmSync(path.join(campaignDir, 'opencode.json'));
-    fs.appendFileSync(path.join(campaignDir, 'memory', 'full', 'chapter-01.md'), '\n## Opening\n早安。\n', 'utf8');
-    const resumeRes = setupPureEnvironment({
+    // 2. Selecting opencode configures opencode without clobbering custom opencode.json, or creates default when missing
+    const opencodeRes = setupPureEnvironment({
       dir: campaignDir,
-      agent: 'codex',
+      agent: 'opencode',
       env: makeCleanEnv(),
-      commandExists: (cli) => cli === 'opencode',
+      commandExists: (cli) => installedSet.has(cli),
     });
-    assert.equal(resumeRes.isResume, true);
-    assert.equal(
-      resumeRes.nativeLaunchCommand,
-      'codex -c \'model_instructions_file=".tavern-bard/system-prompt.md"\' "继续游戏"'
-    );
+    assert.deepEqual(opencodeRes.configuredClis, ['opencode']);
+    const opencodeAgent = fs.readFileSync(path.join(campaignDir, '.opencode', 'agents', 'tavern-bard.md'), 'utf8');
+    assert.match(opencodeAgent, /^---\ndescription: .+\nmode: primary\n---\n/);
+    assert.ok(opencodeAgent.includes(PURE_ENV_MARKER));
+    assert.equal(fs.readFileSync(path.join(campaignDir, 'opencode.json'), 'utf8'), customOpencodeJson);
+
+    fs.rmSync(path.join(campaignDir, 'opencode.json'));
+    setupPureEnvironment({
+      dir: campaignDir,
+      agent: 'opencode',
+      env: makeCleanEnv(),
+      commandExists: (cli) => installedSet.has(cli),
+    });
     const defaultOpencode = JSON.parse(fs.readFileSync(path.join(campaignDir, 'opencode.json'), 'utf8'));
     assert.deepEqual(defaultOpencode, {
       $schema: 'https://opencode.ai/config.json',
       default_agent: 'tavern-bard',
     });
+
+    // 3. Selecting gemini upserts .gemini/.env cleanly without clobbering other vars
+    const geminiRes = setupPureEnvironment({
+      dir: campaignDir,
+      agent: 'gemini',
+      env: makeCleanEnv(),
+      commandExists: (cli) => installedSet.has(cli),
+    });
+    assert.deepEqual(geminiRes.configuredClis, ['gemini']);
+    const geminiEnv = fs.readFileSync(path.join(campaignDir, '.gemini', '.env'), 'utf8');
+    assert.match(geminiEnv, /^GEMINI_MODEL=gemini-2\.5-pro$/m);
+    assert.match(geminiEnv, /^OTHER_VAR=1$/m);
+    assert.match(geminiEnv, /^GEMINI_SYSTEM_MD=\.tavern-bard\/system-prompt\.md$/m);
+    assert.equal(geminiEnv.match(/GEMINI_SYSTEM_MD=/g).length, 1);
+
+    // 4. Selecting codex detects ## Opening -> isResume: true
+    fs.appendFileSync(path.join(campaignDir, 'memory', 'full', 'chapter-01.md'), '\n## Opening\n早安。\n', 'utf8');
+    const resumeRes = setupPureEnvironment({
+      dir: campaignDir,
+      agent: 'codex',
+      env: makeCleanEnv(),
+      commandExists: (cli) => installedSet.has(cli),
+    });
+    assert.deepEqual(resumeRes.configuredClis, ['codex']);
+    assert.equal(resumeRes.isResume, true);
+    assert.equal(
+      resumeRes.nativeLaunchCommand,
+      'codex -c \'model_instructions_file=".tavern-bard/system-prompt.md"\' "继续游戏"'
+    );
   });
 });
 
@@ -439,15 +469,16 @@ test('syncPureEnvironmentFiles updates only existing pure env files and propagat
     assert.equal(syncPureEnvironmentFiles(campaignDir), false);
     assert.equal(fs.existsSync(path.join(campaignDir, '.tavern-bard', 'system-prompt.md')), false);
 
-    // Set up pure env with ONLY opencode installed (no .claude/agents/tavern-bard.md)
+    // Set up pure env for opencode explicitly (no .claude/ or .agents/ created)
     setupPureEnvironment({
       dir: campaignDir,
-      agent: 'codex',
+      agent: 'opencode',
       env: makeCleanEnv(),
       commandExists: (cli) => cli === 'opencode',
     });
     assert.equal(fs.existsSync(path.join(campaignDir, '.opencode', 'agents', 'tavern-bard.md')), true);
     assert.equal(fs.existsSync(path.join(campaignDir, '.claude', 'agents', 'tavern-bard.md')), false);
+    assert.equal(fs.existsSync(path.join(campaignDir, '.agents', 'agents', 'tavern-bard', 'agent.md')), false);
 
     // preset.js toggle propagates to .tavern-bard/system-prompt.md & .opencode/agents/tavern-bard.md without creating .claude/
     const toggleRes = spawnSync(
@@ -596,7 +627,7 @@ test('env-setup.js CLI handles --help, --json, supported CLI host, and unsupport
       { cwd: REPO_ROOT, env: isolatedEnv, encoding: 'utf8' }
     );
     assert.equal(desktopTextRes.status, 0, desktopTextRes.stderr);
-    assert.match(desktopTextRes.stdout, /未能自动匹配宿主/);
+    assert.match(desktopTextRes.stdout, /不在内置预设名单/);
     assert.match(desktopTextRes.stdout, /npx tavern-bard play --cli claude/);
     assert.match(desktopTextRes.stdout, /直接在这里开始/);
 
@@ -668,7 +699,9 @@ test('agy first-class support: setupPureEnvironment & syncPureEnvironmentFiles m
     assert.equal(agyRes.supportedPureHost, true);
     assert.equal(agyRes.preferredCli, 'agy');
     assert.equal(agyRes.nativeLaunchCommand, 'agy --agent tavern-bard -i "开始游戏"');
-    assert.ok(agyRes.configuredClis.includes('agy'));
+    assert.deepEqual(agyRes.configuredClis, ['agy']);
+    assert.equal(fs.existsSync(path.join(campaignDir, 'opencode.json')), false);
+    assert.equal(fs.existsSync(path.join(campaignDir, '.opencode')), false);
 
     assert.equal(fs.existsSync(agyAgentPath), true);
     const agyAgentMd = fs.readFileSync(agyAgentPath, 'utf8');
@@ -740,5 +773,96 @@ test('env-setup.js registers custom CLI pureLauncher via --agent, --launch-arg, 
       fs.readFileSync(path.join(campaignDir, 'campaign.json'), 'utf8')
     );
     assert.deepEqual(savedCampaign.pureLauncher, parsed.pureLauncher);
+  });
+});
+
+test('env-setup.js --sync-file preserves YAML frontmatter, syncs via preset.js, and rejects path traversal', () => {
+  const { PURE_ENV_MARKER } = require('../skill/scripts/lib/pure-env');
+
+  withTempDir((dir) => {
+    const campaignDir = path.join(dir, 'campaign');
+    const cardPath = createMinimalCard(dir, '沈清秋');
+
+    const initRes = spawnSync(
+      process.execPath,
+      [INIT_SCRIPT, '--card', cardPath, '--preset', FIXTURE_PRESET, '--user', '陈默', '--dir', campaignDir],
+      { cwd: REPO_ROOT, encoding: 'utf8' }
+    );
+    assert.equal(initRes.status, 0, initRes.stderr);
+
+    const customAgentRel = '.custom-agent/agents/tavern-bard.md';
+    const customAgentFull = path.join(campaignDir, '.custom-agent', 'agents', 'tavern-bard.md');
+    fs.mkdirSync(path.dirname(customAgentFull), { recursive: true });
+    fs.writeFileSync(
+      customAgentFull,
+      '---\nname: tavern-bard\nmode: primary\ntools: [read, write, bash]\n---\n\nold body\n',
+      'utf8'
+    );
+
+    const setupRes = spawnSync(
+      process.execPath,
+      [
+        ENV_SETUP_SCRIPT,
+        '--dir',
+        campaignDir,
+        '--agent',
+        'custom-cli',
+        '--launch-arg',
+        '--agent',
+        '--launch-arg',
+        'tavern-bard',
+        '--sync-file',
+        customAgentRel,
+        '--json',
+      ],
+      { cwd: REPO_ROOT, env: makeCleanEnv(), encoding: 'utf8' }
+    );
+    assert.equal(setupRes.status, 0, setupRes.stderr);
+
+    const parsed = JSON.parse(setupRes.stdout);
+    assert.equal(parsed.supportedPureHost, true);
+    assert.equal(parsed.preferredCli, 'custom-cli');
+    assert.deepEqual(parsed.pureLauncher.syncFiles, [customAgentRel]);
+
+    const syncedContent = fs.readFileSync(customAgentFull, 'utf8');
+    assert.match(
+      syncedContent,
+      /^---\nname: tavern-bard\nmode: primary\ntools: \[read, write, bash\]\n---\n/
+    );
+    assert.ok(!syncedContent.includes('old body'));
+    assert.ok(syncedContent.includes(PURE_ENV_MARKER));
+    assert.ok(syncedContent.includes('小猫之神'));
+
+    // preset.js toggle propagates updates while keeping custom YAML frontmatter intact
+    const toggleRes = spawnSync(
+      process.execPath,
+      [PRESET_SCRIPT, 'toggle', '--disable', '猫猫留言', '--dir', campaignDir],
+      { cwd: REPO_ROOT, encoding: 'utf8' }
+    );
+    assert.equal(toggleRes.status, 0, toggleRes.stderr);
+
+    const afterToggle = fs.readFileSync(customAgentFull, 'utf8');
+    assert.match(
+      afterToggle,
+      /^---\nname: tavern-bard\nmode: primary\ntools: \[read, write, bash\]\n---\n/
+    );
+    assert.ok(!afterToggle.includes('猫猫留言'));
+
+    // Path traversal outside campaignDir must fail
+    const badSyncRes = spawnSync(
+      process.execPath,
+      [
+        ENV_SETUP_SCRIPT,
+        '--dir',
+        campaignDir,
+        '--agent',
+        'custom-cli',
+        '--sync-file',
+        '../escape.md',
+      ],
+      { cwd: REPO_ROOT, env: makeCleanEnv(), encoding: 'utf8' }
+    );
+    assert.notEqual(badSyncRes.status, 0);
+    assert.match(badSyncRes.stderr, /inside the campaign directory/i);
   });
 });
