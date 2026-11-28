@@ -104,7 +104,9 @@ test('init.js initializes real PNG card and Meowssiah preset into an empty direc
     assert.ok(agentsMd.includes('小猫之神'));
     assert.equal(fs.existsSync(path.join(dir, '_onboarding_audit.md')), true);
     const auditMd = fs.readFileSync(path.join(dir, '_onboarding_audit.md'), 'utf8');
-    assert.match(auditMd, /__sandbox__/);
+    assert.match(auditMd, /原文/);
+    assert.match(auditMd, /严禁由\s*AI.*改写/);
+    assert.doesNotMatch(auditMd, /__sandbox__/);
 
     // campaign.json
     const campaign = JSON.parse(fs.readFileSync(path.join(dir, 'campaign.json'), 'utf8'));
@@ -434,5 +436,87 @@ test('init.js does not create an empty orphan targetDir when --card or --preset 
     fs.writeFileSync(path.join(nonEmptyTarget, 'keep.txt'), 'important', 'utf8');
     const guardRes = runInitCli(['--card', path.join(dir, 'does-not-exist.png'), '--dir', nonEmptyTarget]);
     assert.equal(guardRes.status, 2);
+  });
+});
+
+test('buildAgentsMd and syncWorkspaceAgentsMd emit Pure Environment Resume Tip only when pureEnvPrepared is true', () => {
+  const { buildAgentsMd, syncWorkspaceAgentsMd } = require('../skill/scripts/lib/workspace-agents');
+
+  const defaultAgents = buildAgentsMd({
+    char: '角色甲',
+    user: '旅人',
+    hasPreset: false,
+    hasStatus: false,
+    hasStatusCandidates: false,
+    needsOnboardingAudit: false,
+  });
+  assert.doesNotMatch(defaultAgents, /## Pure Environment Resume Tip/);
+
+  const explicitFalseAgents = buildAgentsMd({
+    char: '角色甲',
+    user: '旅人',
+    hasPreset: false,
+    hasStatus: false,
+    hasStatusCandidates: false,
+    needsOnboardingAudit: false,
+    pureEnvPrepared: false,
+    preferredCli: 'codex',
+  });
+  assert.doesNotMatch(explicitFalseAgents, /## Pure Environment Resume Tip/);
+
+  const pureAgents = buildAgentsMd({
+    char: '角色甲',
+    user: '旅人',
+    hasPreset: false,
+    hasStatus: false,
+    hasStatusCandidates: false,
+    needsOnboardingAudit: false,
+    pureEnvPrepared: true,
+    preferredCli: 'claude',
+  });
+  assert.match(pureAgents, /## Pure Environment Resume Tip/);
+  assert.match(pureAgents, /\[TAVERN-BARD PURE NARRATOR ENVIRONMENT ACTIVE\]/);
+  assert.match(pureAgents, /npx tavern-bard play/);
+  assert.match(pureAgents, /claude/);
+  assert.match(
+    pureAgents,
+    /> 💡 提示：本存档已配置纯净系统提示词环境，当前为普通兼容模式；如需满血破限可退出运行 npx tavern-bard play（直接发送行动则继续在当前模式游玩）。/
+  );
+  assert.ok(
+    pureAgents.indexOf('## Pure Environment Resume Tip') < pureAgents.indexOf('## Three Iron Rules'),
+    'Pure Environment Resume Tip should appear right before Three Iron Rules'
+  );
+
+  withTempDir((dir) => {
+    const campaign = {
+      char: '测试角色',
+      user: '玩家',
+      hasPreset: false,
+      hasStatus: false,
+      hasStatusCandidates: false,
+      needsOnboardingAudit: false,
+      pureEnvPrepared: true,
+      preferredCli: 'codex',
+    };
+    fs.writeFileSync(path.join(dir, 'campaign.json'), JSON.stringify(campaign, null, 2), 'utf8');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), defaultAgents, 'utf8');
+
+    const synced = syncWorkspaceAgentsMd(dir);
+    assert.equal(synced, true);
+    const updatedAgents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+    assert.match(updatedAgents, /## Pure Environment Resume Tip/);
+    assert.match(updatedAgents, /\[TAVERN-BARD PURE NARRATOR ENVIRONMENT ACTIVE\]/);
+    assert.match(updatedAgents, /npx tavern-bard play/);
+    assert.match(updatedAgents, /codex/);
+    assert.ok(
+      updatedAgents.indexOf('## Pure Environment Resume Tip') < updatedAgents.indexOf('## Three Iron Rules')
+    );
+
+    // Turning pureEnvPrepared off removes the tip on re-sync
+    campaign.pureEnvPrepared = false;
+    fs.writeFileSync(path.join(dir, 'campaign.json'), JSON.stringify(campaign, null, 2), 'utf8');
+    syncWorkspaceAgentsMd(dir);
+    const revertedAgents = fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8');
+    assert.doesNotMatch(revertedAgents, /## Pure Environment Resume Tip/);
   });
 });
